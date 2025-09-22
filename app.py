@@ -4,14 +4,16 @@ import pandas as pd
 
 from oplab_client import OpLabClient
 from synthetic_dividends import find_synthetic_dividend_options
-from direction_radar import render_direction_radar_page
+from professional_radar import render_professional_radar_page
+from income_opportunities import render_income_opportunities_page
+from run_backtest import render_backtest_page
 
 
 st.set_page_config(page_title="Options Radar", layout="wide")
 st.title("🎯 Options Radar")
 
 # Cria abas
-tab1, tab2 = st.tabs(["💰 Dividendos Sintéticos", "📈 Radar de Direção"])
+tab1, tab2, tab3, tab4 = st.tabs(["💰 Dividendos Sintéticos", "🎯 Radar Profissional", "💸 Oportunidades de Renda", "🔬 Backtest"])
 
 with tab1:
     st.markdown("### Estratégia de Dividendos Sintéticos")
@@ -20,30 +22,30 @@ with tab1:
     def render_params_form():
         with st.form("params_form"):
             st.subheader("Parâmetros de busca")
-            ticker = st.text_input("Ticker (ex.: PETR4)", value="PETR4").strip().upper()
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                min_volume = st.number_input("Contratos ativos (min)", min_value=0, value=10, step=5, help="Quantidade mínima de contratos ativos para filtro de liquidez")
-            with col2:
-                min_days = st.number_input("Prazo mínimo (dias)", min_value=7, max_value=365, value=15, step=1, help="Mínimo 7 dias para evitar opções muito próximas do vencimento")
-            with col3:
-                max_days = st.number_input("Prazo máximo (dias)", min_value=1, max_value=365, value=45, step=1)
             
+            # Primeira linha - ticker e tipo
+            ticker_col, type_col = st.columns([2, 1])
+            with ticker_col:
+                ticker = st.text_input("Ticker (ex.: PETR4)", value="PETR4", key="dividends_ticker").strip().upper()
+            with type_col:
+                option_types = st.selectbox(
+                    "Tipo de opções",
+                    options=["Ambas (CALL + PUT)", "Apenas CALL", "Apenas PUT"],
+                    index=0,
+                    help="Escolha quais estratégias incluir na busca",
+                    key="dividends_option_types"
+                )
 
-            st.markdown("CALL coberta")
-            c1, c2 = st.columns(2)
-            with c1:
-                call_min_distance = st.number_input("CALL: distância mínima (%)", min_value=0.0, value=15.0, step=0.5)
-            with c2:
-                call_max_delta = st.number_input("CALL: delta máximo", min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-
-            st.markdown("PUT coberta")
-            p1, p2 = st.columns(2)
-            with p1:
-                put_max_distance = st.number_input("PUT: distância máxima (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5, help="Distância máxima abaixo do preço atual")
-            with p2:
-                put_min_delta = st.number_input("PUT: delta mínimo", min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f", help="Delta mínimo em valor absoluto")
+            # Segunda linha de parâmetros
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                min_volume = st.number_input("Contratos ativos (min)", min_value=0, value=10, step=5, help="Quantidade mínima de contratos ativos para filtro de liquidez", key="dividends_min_volume")
+            with col2:
+                min_days = st.number_input("Prazo mínimo (dias)", min_value=5, max_value=365, value=15, step=1, help="Mínimo 5 dias para evitar opções muito próximas do vencimento", key="dividends_min_days")
+            with col3:
+                max_days = st.number_input("Prazo máximo (dias)", min_value=1, max_value=365, value=45, step=1, key="dividends_max_days")
+            with col4:
+                max_exercise_prob = st.number_input("Prob. máx. exercício (%)", min_value=1.0, max_value=50.0, value=20.0, step=1.0, help="Probabilidade máxima de exercício da opção", key="dividends_exercise_prob")
 
             submitted = st.form_submit_button("Buscar sugestões")
 
@@ -52,10 +54,8 @@ with tab1:
             "min_volume": int(min_volume),
             "min_days": int(min_days),
             "max_days": int(max_days),
-            "call_min_distance_pct": float(call_min_distance),
-            "call_max_delta": float(call_max_delta),
-            "put_max_distance_pct": -float(put_max_distance),  # Converter para negativo
-            "put_min_delta": -float(put_min_delta),  # Converter para negativo
+            "max_exercise_prob": float(max_exercise_prob),
+            "option_types": option_types,
         }
         return submitted, params
 
@@ -118,14 +118,18 @@ with tab1:
                     min_volume=params["min_volume"],
                     min_days=params["min_days"],
                     max_days=params["max_days"],
-                    call_min_distance_pct=params["call_min_distance_pct"],
-                    call_max_delta=params["call_max_delta"],
-                    put_max_distance_pct=params["put_max_distance_pct"],
-                    put_min_delta=params["put_min_delta"],
+                    max_exercise_prob=params["max_exercise_prob"],
+                    option_types=params["option_types"],
                 )
                 render_results(params["ticker"], df)
         except Exception as e:
             st.error(f"Erro: {e}")
 
 with tab2:
-    render_direction_radar_page()
+    render_professional_radar_page()
+
+with tab3:
+    render_income_opportunities_page()
+
+with tab4:
+    render_backtest_page()

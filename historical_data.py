@@ -31,6 +31,12 @@ class HistoricalDataProvider:
         Returns:
             DataFrame com colunas ['date', 'close', 'volume']
         """
+        # Define seed baseado no ticker para reprodutibilidade
+        # Mas com variação baseada no preço para gerar cenários diferentes
+        seed_value = hash(ticker) % (2**32)
+        np.random.seed(seed_value)
+        random.seed(seed_value)
+        
         # Gera datas com mais dias para garantir 200 períodos úteis
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
@@ -50,10 +56,24 @@ class HistoricalDataProvider:
         # Simula preços com tendência e volatilidade realistas
         n_days = len(dates)
         
-        # Gera retornos com alguma tendência e volatilidade
-        returns = np.random.normal(0.0005, 0.02, n_days)  # 0.05% retorno médio, 2% vol
+        # Gera retornos com tendência mais variada e realista
+        # Usa o preço como base para determinar cenários diferentes
+        price_factor = current_price / 25.0  # Normaliza em torno de 25
         
-        # Ajusta o último preço para coincidir com o atual
+        # Cria cenários mais variados baseados no preço
+        if price_factor > 1.5:  # Preços altos
+            trend = 0.0008  # Ligeira tendência de alta
+            volatility = 0.018
+        elif price_factor < 0.8:  # Preços baixos  
+            trend = -0.0008  # Ligeira tendência de baixa
+            volatility = 0.022
+        else:  # Preços médios
+            trend = np.random.choice([-0.0005, 0.0005])  # Tendência aleatória
+            volatility = 0.020
+        
+        returns = np.random.normal(trend, volatility, n_days)
+        
+        # Gera preços do passado para o presente
         prices = [current_price]
         for i in range(n_days - 1, 0, -1):
             prices.insert(0, prices[0] / (1 + returns[i]))

@@ -16,9 +16,9 @@ class Direction(Enum):
 
 
 class RiskProfile(Enum):
-    CONSERVATIVE = "conservador"
-    MODERATE = "moderado"
-    AGGRESSIVE = "arrojado"
+    SHORT_TERM = "0-3 meses"
+    MEDIUM_TERM = "3-6 meses"
+    LONG_TERM = "6-12 meses"
 
 
 @dataclass
@@ -35,6 +35,7 @@ class TechnicalSignal:
     direction: Direction
     confidence: float
     reasoning: str
+    price_history: Optional[pd.DataFrame] = None
 
 
 class TechnicalAnalyzer:
@@ -86,6 +87,7 @@ class TechnicalAnalyzer:
         current_macd_histogram = macd_histogram.iloc[-1]
         current_volume_ratio = volume_ratio.iloc[-1]
         
+        
         # Determina direção e confiança
         direction, confidence, reasoning = self._determine_direction(
             current_price, current_sma_50, current_sma_200, current_rsi,
@@ -104,7 +106,8 @@ class TechnicalAnalyzer:
             volume_ratio_20d=current_volume_ratio,
             direction=direction,
             confidence=confidence,
-            reasoning=reasoning
+            reasoning=reasoning,
+            price_history=price_data
         )
     
     def _calculate_sma(self, prices: pd.Series, period: int) -> pd.Series:
@@ -152,18 +155,18 @@ class TechnicalAnalyzer:
         bearish_signals = 0
         reasoning_parts = []
         
-        # Análise de tendência (SMA)
+        # Análise de tendência (SMA) - mais balanceada
         if price > sma_200:
-            bullish_signals += 2  # Peso maior para tendência
+            bullish_signals += 1
             reasoning_parts.append(f"Preço (R${price:.2f}) acima da SMA200 (R${sma_200:.2f})")
         elif price < sma_200:
-            bearish_signals += 2
+            bearish_signals += 1
             reasoning_parts.append(f"Preço (R${price:.2f}) abaixo da SMA200 (R${sma_200:.2f})")
         
-        # Análise de momentum (RSI)
-        if 45 <= rsi <= 65:
-            bullish_signals += 1
-            reasoning_parts.append(f"RSI neutro ({rsi:.1f}) - sem sobrecompra/sobrevenda")
+        # Análise de momentum (RSI) - mais balanceada
+        if 30 <= rsi <= 70:
+            # RSI neutro - não adiciona sinal
+            reasoning_parts.append(f"RSI neutro ({rsi:.1f}) - sem sinal claro")
         elif rsi > 70:
             bearish_signals += 1
             reasoning_parts.append(f"RSI sobrecomprado ({rsi:.1f}) - risco de correção")
@@ -171,41 +174,43 @@ class TechnicalAnalyzer:
             bullish_signals += 1
             reasoning_parts.append(f"RSI sobrevendido ({rsi:.1f}) - possível reversão")
         
-        # Análise de momentum (MACD)
-        if macd_line > 0 and macd_line > macd_signal:
+        # Análise de momentum (MACD) - mais balanceada
+        if macd_line > 0:
             bullish_signals += 1
-            reasoning_parts.append("MACD positivo e em alta")
-        elif macd_line < 0 or macd_line < macd_signal:
+            reasoning_parts.append("MACD positivo")
+        elif macd_line < 0:
             bearish_signals += 1
-            reasoning_parts.append("MACD negativo ou em queda")
+            reasoning_parts.append("MACD negativo")
         
-        # Análise de volume
-        if volume_ratio > 1.2:
-            if bullish_signals > bearish_signals:
-                bullish_signals += 1
-                reasoning_parts.append(f"Volume alto ({volume_ratio:.1f}x) confirma tendência")
-            else:
-                bearish_signals += 1
-                reasoning_parts.append(f"Volume alto ({volume_ratio:.1f}x) confirma movimento")
+        # Análise de volume - simplificada
+        if volume_ratio > 1.5:
+            reasoning_parts.append(f"Volume alto ({volume_ratio:.1f}x) - confirma movimento")
         
         # Determina direção
         total_signals = bullish_signals + bearish_signals
+        
+        
         if total_signals == 0:
             direction = Direction.NEUTRAL
             confidence = 0.0
             reasoning = "Sinais técnicos inconclusivos"
         elif bullish_signals > bearish_signals:
             direction = Direction.CALL
-            confidence = bullish_signals / total_signals
+            # Confiança mais realista: baseada na força do sinal, limitada a 85%
+            raw_confidence = bullish_signals / total_signals
+            confidence = min(0.85, 0.50 + (raw_confidence - 0.5) * 0.7)  # 50% a 85%
             reasoning = "Tendência de alta: " + " | ".join(reasoning_parts)
         elif bearish_signals > bullish_signals:
             direction = Direction.PUT
-            confidence = bearish_signals / total_signals
+            # Confiança mais realista: baseada na força do sinal, limitada a 85%
+            raw_confidence = bearish_signals / total_signals
+            confidence = min(0.85, 0.50 + (raw_confidence - 0.5) * 0.7)  # 50% a 85%
             reasoning = "Tendência de baixa: " + " | ".join(reasoning_parts)
         else:
             direction = Direction.NEUTRAL
-            confidence = 0.5
+            confidence = 0.45  # Ligeiramente abaixo de 50%
             reasoning = "Sinais equilibrados: " + " | ".join(reasoning_parts)
+        
         
         return direction, confidence, reasoning
 
@@ -226,28 +231,28 @@ def get_option_parameters_by_direction(direction: Direction, current_price: floa
     if direction == Direction.NEUTRAL:
         return {}
     
-    # Define parâmetros baseados no perfil de risco
+    # Define parâmetros baseados no perfil de prazo
     risk_params = {
-        RiskProfile.CONSERVATIVE: {
-            "distance_pct": 0.05,  # 5%
-            "delta_min": 0.10,    # Mais flexível
-            "delta_max": 0.30,    # Mais flexível
-            "min_days": 15,       # Mais flexível
-            "max_days": 60        # Mais flexível
+        RiskProfile.SHORT_TERM: {
+            "distance_pct": 0.05,  # 5% - strikes próximos para curto prazo
+            "delta_min": 0.05,     # Delta mais flexível
+            "delta_max": 0.50,     # Delta mais flexível
+            "min_days": 7,         # Mínimo 7 dias (mais flexível)
+            "max_days": 35         # Máximo 35 dias (5 semanas)
         },
-        RiskProfile.MODERATE: {
-            "distance_pct": 0.10,  # 10%
-            "delta_min": 0.15,    # Mais flexível
-            "delta_max": 0.40,    # Mais flexível
-            "min_days": 15,       # Mais flexível
-            "max_days": 90        # Mais flexível
+        RiskProfile.MEDIUM_TERM: {
+            "distance_pct": 0.10,  # 10% - strikes moderados
+            "delta_min": 0.08,     # Delta mais flexível
+            "delta_max": 0.35,     # Delta mais flexível
+            "min_days": 30,        # Mínimo 30 dias
+            "max_days": 120        # Máximo 4 meses
         },
-        RiskProfile.AGGRESSIVE: {
-            "distance_pct": 0.15,  # 15%
-            "delta_min": 0.20,    # Mais flexível
-            "delta_max": 0.50,    # Mais flexível
-            "min_days": 10,       # Mais flexível
-            "max_days": 120       # Mais flexível
+        RiskProfile.LONG_TERM: {
+            "distance_pct": 0.12,  # 12% - strikes mais distantes
+            "delta_min": 0.05,     # Delta mais baixo
+            "delta_max": 0.25,     # Delta mais baixo
+            "min_days": 90,        # Mínimo 3 meses
+            "max_days": 365        # Máximo 12 meses
         }
     }
     
@@ -255,23 +260,19 @@ def get_option_parameters_by_direction(direction: Direction, current_price: floa
     
     if direction == Direction.CALL:
         return {
-            "call_min_distance_pct": params["distance_pct"] * 100,  # Converter para %
-            "call_max_delta": params["delta_max"],
-            "put_max_distance_pct": 0,  # Não buscar PUTs
-            "put_min_delta": 0,
             "min_days": params["min_days"],
             "max_days": params["max_days"],
-            "min_volume": 10  # Volume mínimo reduzido para CALLs
+            "min_volume": 10,
+            "max_exercise_prob": abs(params["delta_max"]) * 100,  # Converte delta para probabilidade
+            "option_types": "Apenas CALL"
         }
     else:  # PUT
         return {
-            "call_min_distance_pct": 0,  # Não buscar CALLs
-            "call_max_delta": 0,
-            "put_max_distance_pct": params["distance_pct"] * 100,  # Converter para %
-            "put_min_delta": params["delta_min"],
             "min_days": params["min_days"],
             "max_days": params["max_days"],
-            "min_volume": 10  # Volume mínimo reduzido para PUTs
+            "min_volume": 10,
+            "max_exercise_prob": abs(params["delta_min"]) * 100,  # Converte delta para probabilidade
+            "option_types": "Apenas PUT"
         }
 
 

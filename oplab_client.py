@@ -22,6 +22,8 @@ class OpLabClient:
       Ex.: /v1/options/chain?symbol={ticker}
     - OPLAB_QUOTE_ENDPOINT: Caminho para cotação do subjacente. Suporta format: {ticker}
       Ex.: /v1/quotes/{ticker}
+    - OPLAB_MOST_ACTIVES_ENDPOINT: Caminho para ativos mais negociados (opcional)
+      Ex.: /v1/stocks/most_actives
 
     Convenções esperadas nos dados de opções:
     - Cada opção deve conter campos que possamos normalizar para os seguintes nomes:
@@ -36,6 +38,7 @@ class OpLabClient:
                  auth_scheme: Optional[str] = None,
                  option_chain_endpoint: Optional[str] = None,
                  quote_endpoint: Optional[str] = None,
+                 most_actives_endpoint: Optional[str] = None,
                  timeout_seconds: int = 20) -> None:
         self.base_url = (base_url or os.getenv("OPLAB_API_BASE_URL", "")).rstrip("/")
         self.api_key = api_key or os.getenv("OPLAB_API_KEY", "")
@@ -43,6 +46,7 @@ class OpLabClient:
         self.auth_scheme = auth_scheme or os.getenv("OPLAB_API_AUTH_SCHEME", "Bearer")
         self.option_chain_endpoint = option_chain_endpoint or os.getenv("OPLAB_OPTION_CHAIN_ENDPOINT", "")
         self.quote_endpoint = quote_endpoint or os.getenv("OPLAB_QUOTE_ENDPOINT", "")
+        self.most_actives_endpoint = most_actives_endpoint or os.getenv("OPLAB_MOST_ACTIVES_ENDPOINT", "")
         self.timeout_seconds = timeout_seconds
 
         if not self.base_url:
@@ -53,6 +57,7 @@ class OpLabClient:
             raise ValueError("OPLAB_OPTION_CHAIN_ENDPOINT não configurado. Defina a variável de ambiente.")
         if not self.quote_endpoint:
             raise ValueError("OPLAB_QUOTE_ENDPOINT não configurado. Defina a variável de ambiente.")
+        # most_actives_endpoint é opcional
 
     def _build_headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {"Accept": "application/json"}
@@ -63,13 +68,66 @@ class OpLabClient:
                 headers[self.auth_header] = self.api_key
         return headers
 
-    def _get(self, endpoint_template: str, ticker: str) -> requests.Response:
-        endpoint = endpoint_template.format(ticker=ticker)
+    def _get(self, endpoint_template: str, ticker: str = "") -> requests.Response:
+        # Se ticker estiver vazio, não aplica format
+        if ticker:
+            endpoint = endpoint_template.format(ticker=ticker)
+        else:
+            endpoint = endpoint_template
         url = f"{self.base_url}{endpoint}" if endpoint.startswith("/") else f"{self.base_url}/{endpoint}"
         resp = requests.get(url, headers=self._build_headers(), timeout=self.timeout_seconds)
         if not resp.ok:
             raise RuntimeError(f"Falha ao consultar {url}: {resp.status_code} - {resp.text}")
         return resp
+
+    def get_most_active_stocks(self, limit: int = 20) -> List[str]:
+        """
+        Busca os ativos mais negociados/líquidos do mercado.
+        
+        Args:
+            limit: Número máximo de ativos para retornar
+            
+        Returns:
+            Lista com os tickers dos ativos mais líquidos
+            
+        Raises:
+            RuntimeError: Se o endpoint não estiver configurado ou houver erro na API
+        """
+        if not self.most_actives_endpoint:
+            raise RuntimeError("OPLAB_MOST_ACTIVES_ENDPOINT não configurado. Usando lista predefinida.")
+        
+        # Para endpoint sem parâmetros, usamos um ticker vazio
+        resp = self._get(self.most_actives_endpoint, "")
+        data: Any = resp.json()
+        
+        # Processa resposta (pode vir como lista ou objeto com results/data)
+        stocks_payload: List[Dict[str, Any]]
+        if isinstance(data, dict):
+            if "results" in data and isinstance(data["results"], list):
+                stocks_payload = data["results"]
+            elif "data" in data and isinstance(data["data"], list):
+                stocks_payload = data["data"]
+            else:
+                stocks_payload = [data]
+        elif isinstance(data, list):
+            stocks_payload = data
+        else:
+            raise RuntimeError("Formato inesperado do payload de ativos mais líquidos da OpLab.")
+        
+        # Extrai tickers dos dados
+        tickers = []
+        for stock_data in stocks_payload:
+            # Tenta diferentes campos possíveis para o ticker
+            ticker = (
+                stock_data.get("symbol") or 
+                stock_data.get("ticker") or 
+                stock_data.get("code") or
+                stock_data.get("stock_code")
+            )
+            if ticker:
+                tickers.append(str(ticker).upper())
+        
+        return tickers[:limit]
 
     def get_underlying_price(self, ticker: str) -> float:
         """Retorna o preço atual (último) do papel subjacente.
@@ -111,7 +169,7 @@ class OpLabClient:
     def get_option_chain(self, ticker: str) -> pd.DataFrame:
         """Retorna DataFrame normalizado com a grade de opções (CALL e PUT) do ticker.
 
-        Colunas normalizadas: symbol, option_type, strike, expiration, bid, ask, last, volume, delta
+        Colunas normalizadas: symbol, option_type, strike, expiration, bid, ask, last, volume, open_interest, delta
         """
         resp = self._get(self.option_chain_endpoint, ticker)
         
@@ -145,7 +203,7 @@ class OpLabClient:
         # Conversões e limpeza básicas
         if not df.empty:
             # Tipos numéricos
-            for col in ["strike", "bid", "ask", "last", "volume", "delta"]:
+            for col in ["strike", "bid", "ask", "last", "volume", "open_interest", "delta"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -192,7 +250,15 @@ class OpLabClient:
             or raw.get("premium")
             or raw.get("tradePrice")
         )
-        volume = raw.get("volume") or raw.get("open_interest") or raw.get("vol") or raw.get("totalVolume")
+        # Separar volume e open interest
+        volume = raw.get("volume") or raw.get("vol") or raw.get("totalVolume")
+        open_interest = (
+            raw.get("open_interest") or 
+            raw.get("openInterest") or 
+            raw.get("oi") or 
+            raw.get("open_int") or
+            raw.get("contracts_open")
+        )
         delta = raw.get("delta") or get_nested(raw, "greeks", "delta")
 
         return {
@@ -204,6 +270,7 @@ class OpLabClient:
             "ask": ask,
             "last": last,
             "volume": volume,
+            "open_interest": open_interest,
             "delta": delta,
         }
 

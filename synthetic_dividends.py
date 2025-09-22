@@ -116,10 +116,8 @@ def find_synthetic_dividend_options(
     min_volume: int = 100,
     min_days: int = 30,
     max_days: int = 45,
-    call_min_distance_pct: float = 15.0,
-    call_max_delta: float = 0.20,
-    put_max_distance_pct: float = -10.0,
-    put_min_delta: float = -0.20,
+    max_exercise_prob: float = 20.0,
+    option_types: str = "Ambas (CALL + PUT)",
 ) -> pd.DataFrame:
     client = client or OpLabClient()
 
@@ -191,15 +189,18 @@ def find_synthetic_dividend_options(
     if min_volume > 0:
         liquid = liquid[liquid["volume"] >= min_volume]
 
-    # CALL coberta
-    calls = liquid[liquid["option_type"] == "CALL"].copy()
-    calls = calls[(calls["distance_pct"] >= float(call_min_distance_pct))]
-    calls = calls[(calls["delta"].astype(float) <= float(call_max_delta)) | (calls["delta"].isna())]
-
-    # PUT coberta
-    puts = liquid[liquid["option_type"] == "PUT"].copy()
-    puts = puts[(puts["distance_pct"] <= float(put_max_distance_pct))]
-    puts = puts[(puts["delta"].astype(float) >= float(put_min_delta)) | (puts["delta"].isna())]
+    # Filtra por probabilidade de exercício
+    filtered_options = liquid[liquid["exercise_prob"] <= max_exercise_prob].copy()
+    
+    # Filtra por tipo de opção conforme seleção do usuário
+    calls = pd.DataFrame()
+    puts = pd.DataFrame()
+    
+    if option_types in ["Ambas (CALL + PUT)", "Apenas CALL"]:
+        calls = filtered_options[filtered_options["option_type"] == "CALL"].copy()
+    
+    if option_types in ["Ambas (CALL + PUT)", "Apenas PUT"]:
+        puts = filtered_options[filtered_options["option_type"] == "PUT"].copy()
 
     # Monta sugestões
     def to_rows(df: pd.DataFrame, strategy: Strategy) -> pd.DataFrame:
