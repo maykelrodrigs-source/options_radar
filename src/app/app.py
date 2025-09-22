@@ -1,12 +1,18 @@
 import os
+import sys
 import streamlit as st
 import pandas as pd
 
+# Garante que o pacote 'src' é importável quando rodado diretamente
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from src.core.data.oplab_client import OpLabClient
-from synthetic_dividends import find_synthetic_dividend_options
-from professional_radar import render_professional_radar_page
-from income_opportunities import render_income_opportunities_page
-from run_backtest import render_backtest_page
+from src.features.income.synthetic_dividends import find_synthetic_dividend_options
+from src.app.pages.professional_radar import render_professional_radar_page
+from src.features.income.income_opportunities import render_income_opportunities_page
+from src.app.pages.run_backtest import render_backtest_page
 
 
 st.set_page_config(page_title="Options Radar", layout="wide")

@@ -6,12 +6,12 @@
 echo "🎯 Iniciando Options Radar..."
 
 # Carrega variáveis de ambiente
-if [ -f "env_config.sh" ]; then
+if [ -f "src/config/env_config.sh" ]; then
     echo "🔧 Carregando configurações de ambiente..."
-    source env_config.sh
+    source src/config/env_config.sh
 else
     echo "❌ Arquivo env_config.sh não encontrado!"
-    echo "💡 Certifique-se de que o arquivo existe no diretório atual."
+    echo "💡 Certifique-se de que o arquivo existe em src/config/env_config.sh."
     exit 1
 fi
 
@@ -25,5 +25,8 @@ fi
 echo "✅ Configurações carregadas com sucesso!"
 echo "🚀 Iniciando Streamlit..."
 
+# Garante que o pacote src/ seja importável
+export PYTHONPATH="$(pwd):${PYTHONPATH}"
+
 # Inicia o Streamlit
-streamlit run app.py --server.headless true
+streamlit run src/app/app.py --server.headless true
