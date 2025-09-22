@@ -8,7 +8,7 @@ import math
 import pandas as pd
 from scipy.stats import norm
 
-from oplab_client import OpLabClient
+from src.core.data.oplab_client import OpLabClient
 
 
 Strategy = Literal["CALL coberta", "PUT coberta"]

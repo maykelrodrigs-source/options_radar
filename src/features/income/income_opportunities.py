@@ -5,7 +5,7 @@ import numpy as np
 import math
 from scipy.stats import norm
 
-from oplab_client import OpLabClient
+from src.core.data.oplab_client import OpLabClient
 
 
 def get_most_active_stocks(client: OpLabClient, limit: int = 20) -> List[str]:

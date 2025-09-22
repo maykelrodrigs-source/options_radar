@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
-from backtest import BacktestResult, BacktestSignal, Direction
+from src.core.backtesting.backtest import BacktestResult, BacktestSignal, Direction
 
 
 class BacktestPlotter:

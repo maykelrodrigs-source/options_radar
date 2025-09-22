@@ -7,11 +7,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from typing import Optional
 
-from oplab_client import OpLabClient
+from src.core.data.oplab_client import OpLabClient
 from synthetic_dividends import find_synthetic_dividend_options
 from technical_analysis import RiskProfile, get_option_parameters_by_direction
 from params import HORIZON_PRESETS
-from data import get_price_history
+from src.core.data.data import get_price_history
 from indicators_simple import compute_indicators_simple as compute_indicators
 from decision import direction_signal, Direction
 

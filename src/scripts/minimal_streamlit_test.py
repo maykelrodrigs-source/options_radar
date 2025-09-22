@@ -26,7 +26,7 @@ if st.button("Executar Teste Linha por Linha"):
         st.write(f"✅ Parâmetros carregados: {type(p)}")
         
         st.write("Passo 5: Importando data...")
-        from data import get_price_history
+        from src.core.data.data import get_price_history
         st.write("✅ Módulo data importado")
         
         st.write("Passo 6: Buscando dados históricos...")

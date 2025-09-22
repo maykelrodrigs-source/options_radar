@@ -5,7 +5,7 @@ Script para testar e identificar o erro "The truth value of a Series is ambiguou
 import pandas as pd
 import numpy as np
 from params import HORIZON_PRESETS
-from data import get_price_history
+from src.core.data.data import get_price_history
 from indicators_simple import compute_indicators_simple
 from decision import direction_signal
 

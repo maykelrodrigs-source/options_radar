@@ -10,8 +10,8 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from typing import Optional
 
-from backtest import BacktestEngine, BacktestResult
-from plots import BacktestPlotter, create_all_plots
+from src.core.backtesting.backtest import BacktestEngine, BacktestResult
+from src.core.backtesting.plots import BacktestPlotter, create_all_plots
 
 
 def render_backtest_page():
@@ -90,62 +90,101 @@ def render_backtest_page():
             help="Variação mínima para considerar acerto"
         )
         
-        # Botão de execução
-        run_backtest = st.button(
-            "🚀 Executar Backtest",
-            type="primary",
-            help="Inicia o backtest com os parâmetros configurados"
-        )
-    
-    # Área principal
-    if not run_backtest:
-        render_welcome_section(ticker, start_date, datetime.combine(end_date, datetime.min.time()), horizon)
-        return
-    
-    # Validações
-    if not ticker:
-        st.error("❌ Digite um ticker válido")
-        return
-    
-    if years_back < 1:
-        st.error("❌ Período deve ser pelo menos 1 ano")
-        return
-    
-    # Executa backtest
-    with st.spinner(f"🔍 Executando backtest para {ticker}..."):
-        try:
-            engine = BacktestEngine(
-                success_threshold=success_threshold,
-                horizon=horizon
+        # Botões de execução
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            run_backtest = st.button(
+                "🚀 Executar Backtest",
+                type="primary",
+                help="Inicia o backtest com os parâmetros configurados"
             )
-            
-            result = engine.run_backtest(
-                ticker=ticker,
-                start_date=start_date,
-                end_date=datetime.combine(end_date, datetime.min.time()),
-                evaluation_days=evaluation_days,
-                rolling_window=rolling_window
-            )
-            
-            # Salva resultado na sessão para reutilização
-            st.session_state['backtest_result'] = result
-            st.session_state['backtest_params'] = {
-                'ticker': ticker,
-                'horizon': horizon,
-                'start_date': start_date,
-                'end_date': end_date,
-                'evaluation_days': evaluation_days,
-                'rolling_window': rolling_window,
-                'success_threshold': success_threshold
-            }
-            
-        except Exception as e:
-            st.error(f"❌ Erro ao executar backtest: {e}")
-            st.exception(e)
+        with col2:
+            if st.button("🗑️ Limpar", help="Limpa resultado anterior"):
+                if 'backtest_result' in st.session_state:
+                    del st.session_state['backtest_result']
+                if 'backtest_params' in st.session_state:
+                    del st.session_state['backtest_params']
+                st.rerun()
+    
+    # Verifica se deve executar novo backtest
+    should_run_backtest = False
+    
+    if run_backtest:
+        # Validações antes de executar
+        if not ticker:
+            st.error("❌ Digite um ticker válido")
             return
+        
+        if years_back < 1:
+            st.error("❌ Período deve ser pelo menos 1 ano")
+            return
+            
+        should_run_backtest = True
     
-    # Renderiza resultados
-    render_results_section(result)
+    # Verifica se já existe resultado na sessão
+    has_existing_result = (
+        'backtest_result' in st.session_state and 
+        st.session_state['backtest_result'] is not None
+    )
+    
+    # Área principal - decide o que mostrar
+    if should_run_backtest:
+        # Executa novo backtest
+        with st.spinner(f"🔍 Executando backtest para {ticker}..."):
+            try:
+                engine = BacktestEngine(
+                    success_threshold=success_threshold,
+                    horizon=horizon
+                )
+                
+                result = engine.run_backtest(
+                    ticker=ticker,
+                    start_date=start_date,
+                    end_date=datetime.combine(end_date, datetime.min.time()),
+                    evaluation_days=evaluation_days,
+                    rolling_window=rolling_window
+                )
+                
+                # Salva resultado na sessão para reutilização
+                st.session_state['backtest_result'] = result
+                st.session_state['backtest_params'] = {
+                    'ticker': ticker,
+                    'horizon': horizon,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'evaluation_days': evaluation_days,
+                    'rolling_window': rolling_window,
+                    'success_threshold': success_threshold
+                }
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao executar backtest: {e}")
+                st.exception(e)
+                return
+        
+        # Renderiza resultados do novo backtest
+        render_results_section(result)
+        
+    elif has_existing_result:
+        # Mostra resultado existente
+        result = st.session_state['backtest_result']
+        params = st.session_state.get('backtest_params', {})
+        
+        # Mostra informações do backtest existente
+        ticker_info = params.get('ticker', 'N/A')
+        horizon_info = params.get('horizon', 'N/A')
+        start_info = params.get('start_date', datetime.now()).strftime('%d/%m/%Y') if params.get('start_date') else 'N/A'
+        end_info = params.get('end_date', datetime.now()).strftime('%d/%m/%Y') if params.get('end_date') else 'N/A'
+        
+        st.info(f"📊 Mostrando resultado do backtest anterior: **{ticker_info}** ({horizon_info}) | {start_info} a {end_info}")
+        st.caption("💡 Para executar novo backtest, altere os parâmetros e clique em 'Executar Backtest' ou clique em 'Limpar' para remover este resultado.")
+        
+        # Renderiza resultados existentes
+        render_results_section(result)
+        
+    else:
+        # Mostra tela de boas-vindas
+        render_welcome_section(ticker, start_date, datetime.combine(end_date, datetime.min.time()), horizon)
 
 
 def render_welcome_section(ticker: str, start_date: datetime, end_date: datetime, horizon: str = "médio"):
@@ -239,7 +278,7 @@ def render_welcome_section(ticker: str, start_date: datetime, end_date: datetime
     }
     
     sample_df = pd.DataFrame(sample_data)
-    st.dataframe(sample_df, use_container_width=True, hide_index=True)
+    st.dataframe(sample_df, hide_index=True)
 
 
 def render_results_section(result: BacktestResult):
@@ -353,7 +392,7 @@ def render_summary_tab(result: BacktestResult):
         }
         
         signal_df = pd.DataFrame(signal_data)
-        st.dataframe(signal_df, use_container_width=True, hide_index=True)
+        st.dataframe(signal_df, hide_index=True)
     
     with col2:
         st.markdown("**🎯 Acurácia por Confiança**")
@@ -373,7 +412,7 @@ def render_summary_tab(result: BacktestResult):
         }
         
         conf_df = pd.DataFrame(conf_data)
-        st.dataframe(conf_df, use_container_width=True, hide_index=True)
+        st.dataframe(conf_df, hide_index=True)
     
     # Insights automáticos
     st.markdown("---")
@@ -487,7 +526,7 @@ def render_signals_table_tab(result: BacktestResult):
         df = pd.DataFrame(data)
         
         st.caption(f"Mostrando {len(df)} de {len(result.signals)} sinais")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, hide_index=True)
     else:
         st.info("Nenhum sinal encontrado com os filtros aplicados")
 

@@ -11,7 +11,7 @@ from enum import Enum
 import math
 from datetime import datetime, timedelta
 
-from oplab_client import OpLabClient
+from src.core.data.oplab_client import OpLabClient
 
 
 class Direction(Enum):
@@ -54,6 +54,14 @@ class MomentumAnalysis:
     adx: float
     roc_10: float
     roc_20: float
+    
+    # Indicadores de reversão para médio prazo
+    bb_position: float  # Posição nas Bollinger Bands (-1 a +1)
+    bb_squeeze: bool    # Se está em squeeze (baixa volatilidade)
+    stoch_k: float      # %K do Stochastic
+    stoch_d: float      # %D do Stochastic
+    stoch_signal: str   # "OVERSOLD", "OVERBOUGHT", "NEUTRAL"
+    
     momentum_score: float
     momentum_strength: str
 
@@ -91,6 +99,16 @@ class MacroContextAnalysis:
 
 
 @dataclass
+class DynamicHorizonConfig:
+    """Configuração de horizonte dinâmico baseado em regime de mercado."""
+    evaluation_days: int      # Dias para avaliação do sinal
+    position_size: float      # Tamanho da posição (0.0 a 1.0)
+    stop_loss_pct: float      # Stop loss em %
+    take_profit_pct: float    # Take profit em %
+    regime: str               # "LATERAL", "TRENDING", "BREAKOUT"
+
+
+@dataclass
 class ProfessionalAnalysis:
     """Análise profissional completa."""
     ticker: str
@@ -110,15 +128,29 @@ class ProfessionalAnalysis:
     confidence: float
     key_drivers: List[str]
     strategy_recommendation: str
+    
+    # Horizonte dinâmico
+    dynamic_horizon: Optional[DynamicHorizonConfig] = None
 
 
 class ProfessionalAnalyzer:
     """Analisador profissional para Radar de Direção."""
     
-    def __init__(self, client: Optional[OpLabClient] = None, horizon: str = "médio"):
+    def __init__(self, client: Optional[OpLabClient] = None, horizon: str = "médio", 
+                 decision_threshold: float = 0.30, layer_weights: Optional[Dict[str, float]] = None):
         self.client = client or OpLabClient()
         self.horizon = horizon
         self.params = self._get_horizon_parameters(horizon)
+        self.decision_threshold = decision_threshold
+        
+        # Pesos configuráveis das camadas
+        self.layer_weights = layer_weights or {
+            'trend': 0.30,      # 30% - tendência é fundamental
+            'momentum': 0.25,   # 25% - momentum confirma tendência
+            'volume': 0.20,     # 20% - volume confirma movimento
+            'sentiment': 0.15,  # 15% - sentimento do mercado
+            'macro': 0.10       # 10% - contexto macro
+        }
     
     def _get_horizon_parameters(self, horizon: str) -> dict:
         """Define parâmetros adaptativos baseados no horizonte temporal."""
@@ -203,20 +235,26 @@ class ProfessionalAnalyzer:
         else:
             volatility_regime = "NORMAL"
         
-        # Score de tendência normalizado
+        # Score de tendência normalizado com foco em médio prazo
         trend_score = 0.0
         
-        # Peso das médias móveis adaptativas
+        # Peso das médias móveis adaptativas (maior peso para médio/longo prazo)
         if sma_short > sma_medium:
-            trend_score += 0.2
+            trend_score += 0.15  # Reduzido para dar menos peso ao curto prazo
         if sma_medium > sma_long:
-            trend_score += 0.3
+            trend_score += 0.25  # Mantido - importante para médio prazo
         if sma_long > sma_trend:
-            trend_score += 0.3
+            trend_score += 0.35  # Aumentado - fundamental para médio prazo
+            
+        # Golden/Death Cross com peso maior (SMA50/100 vs SMA200)
         if golden_cross:
-            trend_score += 0.2
+            trend_score += 0.25  # Aumentado - sinal forte para médio prazo
         elif death_cross:
-            trend_score -= 0.2
+            trend_score -= 0.25
+            
+        # Análise adicional para médio prazo: distância das SMAs
+        sma_distance_score = self._calculate_sma_distance_score(sma_medium, sma_long, sma_trend)
+        trend_score += sma_distance_score
         
         # Normalização com tanh para manter em -1..+1
         trend_score = float(np.tanh(trend_score))
@@ -283,6 +321,12 @@ class ProfessionalAnalyzer:
         elif rsi_avg < 40:
             momentum_score -= 0.3
         
+        # Bollinger Bands para médio prazo
+        bb_position, bb_squeeze = self._calculate_bollinger_bands(close)
+        
+        # Stochastic Oscillator
+        stoch_k, stoch_d, stoch_signal = self._calculate_stochastic(price_data)
+        
         # MACD
         macd_hist_val = float(macd_hist.iloc[-1])
         if macd_hist_val > 0:
@@ -302,6 +346,21 @@ class ProfessionalAnalyzer:
             momentum_score += 0.2
         elif roc_10_val < -5:
             momentum_score -= 0.2
+        
+        # Bollinger Bands - indicador de reversão
+        if bb_position > 0.8:  # Próximo da banda superior
+            momentum_score -= 0.2  # Possível reversão de baixa
+        elif bb_position < -0.8:  # Próximo da banda inferior
+            momentum_score += 0.2  # Possível reversão de alta
+        
+        if bb_squeeze:  # Baixa volatilidade - possível breakout
+            momentum_score *= 0.8  # Reduz confiança até definir direção
+        
+        # Stochastic - identificação de extremos
+        if stoch_signal == "OVERSOLD":
+            momentum_score += 0.15
+        elif stoch_signal == "OVERBOUGHT":
+            momentum_score -= 0.15
         
         # Normalização com tanh para manter em -1..+1
         momentum_score = float(np.tanh(momentum_score))
@@ -327,6 +386,11 @@ class ProfessionalAnalyzer:
             adx=adx,
             roc_10=roc_10_val,
             roc_20=float(roc_20.iloc[-1]),
+            bb_position=bb_position,
+            bb_squeeze=bb_squeeze,
+            stoch_k=stoch_k,
+            stoch_d=stoch_d,
+            stoch_signal=stoch_signal,
             momentum_score=momentum_score,
             momentum_strength=momentum_strength
         )
@@ -604,38 +668,29 @@ class ProfessionalAnalyzer:
         )
     
     def calculate_final_decision(self, analysis: 'ProfessionalAnalysis') -> Tuple[Direction, float, List[str]]:
-        """Camada 6: Modelo de decisão com score normalizado."""
-        # Pesos das camadas
-        weights = {
-            'trend': 0.45,      # 45% - tendência é fundamental
-            'momentum': 0.25,   # 25% - momentum confirma tendência
-            'volume': 0.15,     # 15% - volume confirma movimento
-            'sentiment': 0.10,  # 10% - sentimento do mercado
-            'macro': 0.05       # 5% - contexto macro
-        }
-        
-        # Score final ponderado
+        """Camada 6: Modelo de decisão com score normalizado e threshold configurável."""
+        # Score final ponderado usando pesos configuráveis
         final_score = (
-            analysis.trend.trend_score * weights['trend'] +
-            analysis.momentum.momentum_score * weights['momentum'] +
-            analysis.volume_flow.volume_score * weights['volume'] +
-            analysis.options_sentiment.sentiment_score * weights['sentiment'] +
-            analysis.macro_context.overall_context_score * weights['macro']
+            analysis.trend.trend_score * self.layer_weights['trend'] +
+            analysis.momentum.momentum_score * self.layer_weights['momentum'] +
+            analysis.volume_flow.volume_score * self.layer_weights['volume'] +
+            analysis.options_sentiment.sentiment_score * self.layer_weights['sentiment'] +
+            analysis.macro_context.overall_context_score * self.layer_weights['macro']
         )
         
         # Normaliza para -1 a +1
         final_score = max(-1.0, min(1.0, final_score))
         
-        # Determina direção com calibração logística (ajustado para scores normalizados)
-        if final_score >= 0.15:
+        # Determina direção usando threshold configurável
+        if final_score >= self.decision_threshold:
             direction = Direction.CALL
-            confidence = self._calculate_logistic_confidence(final_score)
-        elif final_score <= -0.15:
+            confidence = self._calculate_calibrated_confidence(final_score, direction)
+        elif final_score <= -self.decision_threshold:
             direction = Direction.PUT
-            confidence = self._calculate_logistic_confidence(final_score)
+            confidence = self._calculate_calibrated_confidence(final_score, direction)
         else:
             direction = Direction.NEUTRAL
-            confidence = max(20, min(40, 30 + abs(final_score) * 20))
+            confidence = self._calculate_calibrated_confidence(final_score, direction)
         
         # Identifica drivers principais
         drivers = []
@@ -725,18 +780,22 @@ class ProfessionalAnalyzer:
         # Calcula decisão final
         direction, confidence, drivers = self.calculate_final_decision(analysis)
         
-        # Atualiza análise
+        # Calcula horizonte dinâmico baseado no regime de mercado
+        dynamic_horizon = self._calculate_dynamic_horizon(trend, momentum, volume_flow)
+        
+        # Atualiza análise usando pesos configuráveis
         analysis.final_score = (
-            trend.trend_score * 0.45 +
-            momentum.momentum_score * 0.25 +
-            volume_flow.volume_score * 0.15 +
-            options_sentiment.sentiment_score * 0.10 +
-            macro_context.overall_context_score * 0.05
+            trend.trend_score * self.layer_weights['trend'] +
+            momentum.momentum_score * self.layer_weights['momentum'] +
+            volume_flow.volume_score * self.layer_weights['volume'] +
+            options_sentiment.sentiment_score * self.layer_weights['sentiment'] +
+            macro_context.overall_context_score * self.layer_weights['macro']
         )
         analysis.direction = direction
         analysis.confidence = confidence
         analysis.key_drivers = drivers
         analysis.strategy_recommendation = self.generate_strategy_recommendation(analysis)
+        analysis.dynamic_horizon = dynamic_horizon
         
         return analysis
     
@@ -867,14 +926,195 @@ class ProfessionalAnalyzer:
         
         return float(adx.iloc[-1]) if not adx.empty and not pd.isna(adx.iloc[-1]) else 20.0
     
-    def _calculate_logistic_confidence(self, final_score: float) -> float:
-        """Calcula confiança usando curva logística calibrada."""
-        # Curva logística: confidence = 100 / (1 + exp(-5 * final_score))
-        # Ajustada para dar valores mais realistas entre 50-90%
-        raw_confidence = 100 / (1 + np.exp(-5 * abs(final_score)))
-        # Mapeia para range 50-90% para scores significativos
-        calibrated_confidence = 50 + (raw_confidence - 50) * 0.8
-        return min(90, max(50, calibrated_confidence))
+    def _calculate_calibrated_confidence(self, final_score: float, direction: Direction) -> float:
+        """Calcula confiança calibrada baseada no score e direção."""
+        abs_score = abs(final_score)
+        
+        if direction == Direction.NEUTRAL:
+            # Para NEUTRAL: confiança baixa (20-40%) proporcional ao score
+            # Quanto menor o score absoluto, maior a confiança no NEUTRAL
+            neutral_confidence = 40 - (abs_score * 20)  # Score 0 = 40%, Score 1 = 20%
+            return max(20, min(40, neutral_confidence))
+        else:
+            # Para CALL/PUT: confiança proporcional ao score absoluto
+            # Score 0.3 → ~55%, Score 0.6 → ~70%, Score 0.9 → ~85%
+            # Fórmula: 50 + (abs_score * 40)
+            directional_confidence = 50 + (abs_score * 40)
+            return max(50, min(90, directional_confidence))
+    
+    def _calculate_bollinger_bands(self, prices: pd.Series, period: int = 20, std_dev: float = 2.0) -> Tuple[float, bool]:
+        """
+        Calcula posição nas Bollinger Bands e detecta squeeze.
+        
+        Returns:
+            bb_position: Posição normalizada (-1 a +1)
+            bb_squeeze: Se está em squeeze (baixa volatilidade)
+        """
+        if len(prices) < period:
+            return 0.0, False
+        
+        # Média móvel e desvio padrão
+        sma = prices.rolling(period).mean()
+        std = prices.rolling(period).std()
+        
+        # Bandas
+        upper_band = sma + (std * std_dev)
+        lower_band = sma - (std * std_dev)
+        
+        # Valores atuais
+        current_price = float(prices.iloc[-1])
+        current_sma = float(sma.iloc[-1])
+        current_upper = float(upper_band.iloc[-1])
+        current_lower = float(lower_band.iloc[-1])
+        
+        # Posição normalizada (-1 = banda inferior, 0 = SMA, +1 = banda superior)
+        band_width = current_upper - current_lower
+        if band_width > 0:
+            bb_position = (current_price - current_sma) / (band_width / 2)
+            bb_position = max(-1.0, min(1.0, bb_position))
+        else:
+            bb_position = 0.0
+        
+        # Squeeze: quando as bandas estão muito próximas (baixa volatilidade)
+        # Compara largura atual com média histórica
+        if len(std) >= period * 2:
+            avg_std = std.rolling(period * 2).mean().iloc[-1]
+            current_std = std.iloc[-1]
+            bb_squeeze = current_std < (avg_std * 0.7)  # 30% abaixo da média
+        else:
+            bb_squeeze = False
+        
+        return float(bb_position), bb_squeeze
+    
+    def _calculate_stochastic(self, price_data: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> Tuple[float, float, str]:
+        """
+        Calcula Stochastic Oscillator.
+        
+        Returns:
+            stoch_k: %K do Stochastic
+            stoch_d: %D do Stochastic (média móvel do %K)
+            stoch_signal: "OVERSOLD", "OVERBOUGHT", "NEUTRAL"
+        """
+        close = price_data['close']
+        high = price_data.get('high', close)
+        low = price_data.get('low', close * 0.98)  # Aproximação se não tiver high/low
+        
+        if len(close) < k_period:
+            return 50.0, 50.0, "NEUTRAL"
+        
+        # Highest High e Lowest Low no período
+        highest_high = high.rolling(k_period).max()
+        lowest_low = low.rolling(k_period).min()
+        
+        # %K
+        k_percent = ((close - lowest_low) / (highest_high - lowest_low)) * 100
+        k_percent = k_percent.fillna(50)  # Valores neutros para NaN
+        
+        # %D (média móvel do %K)
+        d_percent = k_percent.rolling(d_period).mean()
+        
+        # Valores atuais
+        stoch_k = float(k_percent.iloc[-1])
+        stoch_d = float(d_percent.iloc[-1])
+        
+        # Sinal baseado nos níveis
+        if stoch_k < 20 and stoch_d < 20:
+            stoch_signal = "OVERSOLD"
+        elif stoch_k > 80 and stoch_d > 80:
+            stoch_signal = "OVERBOUGHT"
+        else:
+            stoch_signal = "NEUTRAL"
+        
+        return stoch_k, stoch_d, stoch_signal
+    
+    def _calculate_dynamic_horizon(self, trend: TrendAnalysis, momentum: MomentumAnalysis, volume_flow: VolumeFlowAnalysis) -> DynamicHorizonConfig:
+        """
+        Calcula horizonte dinâmico baseado no regime de mercado.
+        
+        Lógica:
+        - ADX < 15: Mercado lateral → janelas curtas (5-7 dias)
+        - ADX > 25: Tendência clara → janelas médias (10-15 dias)  
+        - BB Squeeze + Volume alto: Possível breakout → janelas longas (15-20 dias)
+        """
+        adx = momentum.adx
+        bb_squeeze = momentum.bb_squeeze
+        volume_strength = volume_flow.volume_score
+        trend_strength = trend.trend_score
+        
+        # Determina regime de mercado
+        if adx < 15:
+            # Mercado lateral - operações mais rápidas
+            regime = "LATERAL"
+            evaluation_days = 5
+            position_size = 0.3  # Posição menor em mercado lateral
+            stop_loss_pct = 2.0  # Stop mais apertado
+            take_profit_pct = 3.0
+            
+        elif adx > 25:
+            # Tendência clara - pode segurar mais tempo
+            regime = "TRENDING"
+            evaluation_days = 12
+            position_size = 0.5  # Posição média em tendência
+            stop_loss_pct = 3.0
+            take_profit_pct = 6.0
+            
+        elif bb_squeeze and abs(volume_strength) > 0.3:
+            # Possível breakout - aguardar movimento
+            regime = "BREAKOUT"
+            evaluation_days = 20
+            position_size = 0.7  # Posição maior em breakout
+            stop_loss_pct = 4.0  # Stop mais largo para breakout
+            take_profit_pct = 8.0
+            
+        else:
+            # Regime neutro - configuração padrão
+            regime = "NEUTRAL"
+            evaluation_days = 10
+            position_size = 0.4
+            stop_loss_pct = 2.5
+            take_profit_pct = 5.0
+        
+        # Ajustes baseados na força da tendência
+        if abs(trend_strength) > 0.6:  # Tendência muito forte
+            evaluation_days = int(evaluation_days * 1.3)  # Alonga horizonte
+            take_profit_pct *= 1.2  # Target maior
+        elif abs(trend_strength) < 0.2:  # Tendência fraca
+            evaluation_days = max(5, int(evaluation_days * 0.8))  # Encurta horizonte
+            stop_loss_pct *= 0.9  # Stop mais apertado
+        
+        return DynamicHorizonConfig(
+            evaluation_days=min(25, max(5, evaluation_days)),  # Limita entre 5-25 dias
+            position_size=max(0.1, min(0.8, position_size)),   # Limita entre 10-80%
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            regime=regime
+        )
+    
+    def _calculate_sma_distance_score(self, sma_medium: float, sma_long: float, sma_trend: float) -> float:
+        """
+        Calcula score baseado na distância entre SMAs para médio prazo.
+        
+        Lógica:
+        - Maior distância entre SMA50/100 vs SMA200 = tendência mais forte
+        - SMAs alinhadas e divergindo = tendência se fortalecendo  
+        - SMAs convergindo = possível reversão
+        """
+        # Distância percentual entre SMA médio/longo e SMA tendência
+        medium_distance = (sma_medium - sma_trend) / sma_trend if sma_trend > 0 else 0
+        long_distance = (sma_long - sma_trend) / sma_trend if sma_trend > 0 else 0
+        
+        # Score baseado na distância (normalizado)
+        distance_score = (medium_distance + long_distance) / 2
+        
+        # Bonifica alinhamento das SMAs (todas subindo ou descendo)
+        if (sma_medium > sma_long > sma_trend) or (sma_medium < sma_long < sma_trend):
+            alignment_bonus = 0.1  # SMAs alinhadas
+        else:
+            alignment_bonus = -0.05  # SMAs desalinhadas (indecisão)
+        
+        # Limita o score para não dominar outros fatores
+        total_score = distance_score + alignment_bonus
+        return max(-0.2, min(0.2, total_score))
 
 
-__all__ = ["ProfessionalAnalyzer", "ProfessionalAnalysis", "Direction"]
+__all__ = ["ProfessionalAnalyzer", "ProfessionalAnalysis", "Direction", "DynamicHorizonConfig"]

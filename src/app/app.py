@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from oplab_client import OpLabClient
+from src.core.data.oplab_client import OpLabClient
 from synthetic_dividends import find_synthetic_dividend_options
 from professional_radar import render_professional_radar_page
 from income_opportunities import render_income_opportunities_page

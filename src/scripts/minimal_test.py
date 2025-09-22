@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from params import HORIZON_PRESETS
-from data import get_price_history
+from src.core.data.data import get_price_history
 
 st.title("Teste Minimal")
 

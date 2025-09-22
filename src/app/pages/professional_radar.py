@@ -9,10 +9,10 @@ from plotly.subplots import make_subplots
 from typing import Optional
 import datetime
 
-from oplab_client import OpLabClient
-from synthetic_dividends import find_synthetic_dividend_options
-from professional_analysis import ProfessionalAnalyzer, Direction
-from data import get_price_history
+from src.core.data.oplab_client import OpLabClient
+from src.features.income.synthetic_dividends import find_synthetic_dividend_options
+from src.core.professional.professional_analysis import ProfessionalAnalyzer, Direction
+from src.core.data.data import get_price_history
 
 
 def render_professional_radar_page():
@@ -339,11 +339,45 @@ def render_professional_options(analysis, client: OpLabClient):
             st.info(f"Nenhuma opção {analysis.direction.value} encontrada nos critérios profissionais.")
             return
         
-        # Mostra tabela
-        display_df = df[[
-            "Opção", "Strike", "Validade", "Prêmio (R$)", 
-            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)"
-        ]].copy()
+        # Enriquece a tabela com métricas adicionais para melhor análise
+        display_df = df.copy()
+        
+        # Calcula métricas adicionais para visualização (sem alterar modelo)
+        current_price = analysis.current_price
+        
+        # 1. Distância do preço atual
+        display_df["Distância (%)"] = ((display_df["Strike"] / current_price) - 1) * 100
+        
+        # 2. Dias restantes
+        from datetime import datetime
+        display_df["Dias Restantes"] = (pd.to_datetime(display_df["Validade"]) - datetime.now()).dt.days
+        
+        # 3. Adequação temporal (movimento necessário vs tempo disponível)
+        display_df["Mov./Dia (%)"] = abs(display_df["Distância (%)"]) / display_df["Dias Restantes"]
+        
+        # 4. Classificação de adequação temporal
+        def classify_time_adequacy(row):
+            mov_per_day = row["Mov./Dia (%)"]
+            if mov_per_day <= 0.3:
+                return "🟢 Adequado"
+            elif mov_per_day <= 0.5:
+                return "🟡 Apertado"
+            else:
+                return "🔴 Arriscado"
+        
+        display_df["Adequação Temporal"] = display_df.apply(classify_time_adequacy, axis=1)
+        
+        # 5. Volume formatado
+        display_df["Volume"] = display_df["Contratos ativos"]
+        
+        # Seleciona e ordena colunas para exibição
+        display_columns = [
+            "Opção", "Strike", "Distância (%)", "Validade", "Dias Restantes",
+            "Prêmio (R$)", "Retorno a.a. (%)", "Prob. Exercício (%)",
+            "Volume", "Mov./Dia (%)", "Adequação Temporal"
+        ]
+        
+        display_df = display_df[display_columns].copy()
         
         # Ordena por melhor retorno anualizado
         display_df = display_df.sort_values("Retorno a.a. (%)", ascending=False)
@@ -351,10 +385,14 @@ def render_professional_options(analysis, client: OpLabClient):
         # Configuração das colunas
         column_config = {
             "Strike": st.column_config.NumberColumn("Strike", format="R$ %.2f"),
+            "Distância (%)": st.column_config.NumberColumn("Distância (%)", format="%+.1f%%", help="Distância do strike em relação ao preço atual"),
+            "Dias Restantes": st.column_config.NumberColumn("Dias", format="%d"),
             "Prêmio (R$)": st.column_config.NumberColumn("Prêmio (R$)", format="R$ %.2f"),
-            "Retorno (%)": st.column_config.NumberColumn("Retorno (%)", format="%.1f%%"),
             "Retorno a.a. (%)": st.column_config.NumberColumn("Retorno a.a. (%)", format="%.1f%%"),
             "Prob. Exercício (%)": st.column_config.NumberColumn("Prob. Exercício (%)", format="%.0f%%"),
+            "Volume": st.column_config.NumberColumn("Volume", format="%d"),
+            "Mov./Dia (%)": st.column_config.NumberColumn("Mov./Dia (%)", format="%.2f%%", help="Movimento diário necessário para atingir o strike"),
+            "Adequação Temporal": st.column_config.TextColumn("Adequação Temporal", help="Análise se o prazo é adequado para o movimento necessário"),
         }
         
         st.dataframe(display_df, use_container_width=True, column_config=column_config, hide_index=True)
@@ -367,6 +405,40 @@ def render_professional_options(analysis, client: OpLabClient):
         - **Estratégia:** {analysis.strategy_recommendation}
         - **Opções encontradas:** {len(df)}
         """)
+        
+        # Guia de interpretação das novas métricas
+        with st.expander("📖 Como interpretar as métricas da tabela"):
+            st.markdown("""
+            **🎯 Distância (%):** Quanto o strike está acima/abaixo do preço atual
+            - 🟢 **0% a ±5%**: Próximo ao dinheiro (ATM/ITM) - maior probabilidade
+            - 🟡 **±5% a ±10%**: Moderadamente fora do dinheiro - equilibrado
+            - 🔴 **>±10%**: Muito fora do dinheiro - alta alavancagem, alto risco
+            
+            **⏰ Adequação Temporal:** Análise do prazo vs movimento necessário
+            - 🟢 **Adequado**: ≤0.3% movimento/dia - prazo confortável
+            - 🟡 **Apertado**: 0.3-0.5% movimento/dia - requer atenção
+            - 🔴 **Arriscado**: >0.5% movimento/dia - movimento muito exigente
+            
+            **💰 Mov./Dia (%):** Movimento diário médio necessário para atingir o strike
+            - Baseado na distância atual dividida pelos dias restantes
+            - Compare com a volatilidade histórica do ativo (~1-2% dia para ITSA4)
+            
+            **📊 Volume:** Número de contratos negociados
+            - >10.000: Alta liquidez - facilita entrada/saída
+            - 1.000-10.000: Liquidez moderada
+            - <1.000: Baixa liquidez - pode ter spread alto
+            """)
+        
+        # Alerta sobre adequação temporal se necessário
+        risky_options = display_df[display_df["Adequação Temporal"] == "🔴 Arriscado"]
+        if not risky_options.empty:
+            st.warning(f"""
+            ⚠️ **Atenção:** {len(risky_options)} opção(ões) classificada(s) como "🔴 Arriscado" 
+            devido ao movimento diário exigente (>{0.5:.1f}% por dia).
+            
+            Considere que ITSA4 tem volatilidade histórica de ~1.2% ao dia. 
+            Movimentos >0.5% por dia requerem tendência muito forte.
+            """)
         
     except Exception as e:
         st.error(f"Erro ao buscar opções: {e}")

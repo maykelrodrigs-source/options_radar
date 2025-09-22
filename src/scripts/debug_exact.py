@@ -4,11 +4,11 @@ Executa EXATAMENTE o mesmo código que o Streamlit, linha por linha
 """
 import pandas as pd
 import numpy as np
-from params import HORIZON_PRESETS
-from data import get_price_history
-from indicators_simple import compute_indicators_simple as compute_indicators
-from decision import direction_signal, Direction
-from oplab_client import OpLabClient
+from src.core.decision.params import HORIZON_PRESETS
+from src.core.data.data import get_price_history
+from src.core.professional.indicators_simple import compute_indicators_simple as compute_indicators
+from src.core.decision.decision import direction_signal, Direction
+from src.core.data.oplab_client import OpLabClient
 
 def debug_exact_flow():
     print("=== EXECUTANDO FLUXO EXATO DO STREAMLIT ===")
