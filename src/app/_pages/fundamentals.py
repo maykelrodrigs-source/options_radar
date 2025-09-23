@@ -82,14 +82,65 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             help="Código da ação (ex: BBAS3, PETR4, VALE3)"
         ).strip().upper()
         
+        # Verificar se o ticker mudou e buscar dados automaticamente
+        if 'last_ticker' not in st.session_state or st.session_state.last_ticker != ticker:
+            st.session_state.last_ticker = ticker
+            # Buscar dados reais para preencher os campos
+            try:
+                client = OpLabClient()
+                fundamental_data = get_real_fundamental_data(ticker, client)
+                st.session_state.fundamental_data = fundamental_data
+                st.success(f"✅ Dados carregados para {ticker}")
+            except Exception as e:
+                st.session_state.fundamental_data = None
+                st.warning(f"⚠️ Erro ao buscar dados para {ticker}: {e}")
+        
+        # Botão para atualizar dados manualmente
+        col_refresh1, col_refresh2 = st.columns([1, 1])
+        with col_refresh1:
+            if st.button("🔄 Atualizar Dados", help="Força a atualização dos dados do ticker"):
+                try:
+                    client = OpLabClient()
+                    fundamental_data = get_real_fundamental_data(ticker, client)
+                    st.session_state.fundamental_data = fundamental_data
+                    st.session_state.last_ticker = ticker  # Atualizar para evitar recarregamento
+                    st.success(f"✅ Dados atualizados para {ticker}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erro ao atualizar dados: {e}")
+        
+        with col_refresh2:
+            if st.button("🗑️ Limpar Cache", help="Limpa os dados em cache"):
+                if 'fundamental_data' in st.session_state:
+                    del st.session_state.fundamental_data
+                if 'last_ticker' in st.session_state:
+                    del st.session_state.last_ticker
+                st.success("✅ Cache limpo")
+                st.rerun()
+        
         # Dados fundamentais
         with st.form("fundamental_data_form"):
             st.markdown("**Dados Fundamentais:**")
             
+            # Usar dados da sessão se disponíveis
+            if st.session_state.fundamental_data:
+                data = st.session_state.fundamental_data
+                preco_default = data.preco_atual if data.preco_atual > 0 else 22.16
+                lpa_default = data.lpa if data.lpa > 0 else 2.85
+                vpa_default = data.vpa if data.vpa > 0 else 18.50
+                dps_default = data.dps if data.dps > 0 else 1.20
+                crescimento_default = data.crescimento_esperado if data.crescimento_esperado > 0 else 8.0
+            else:
+                preco_default = 22.16
+                lpa_default = 2.85
+                vpa_default = 18.50
+                dps_default = 1.20
+                crescimento_default = 8.0
+            
             preco_atual = st.number_input(
                 "Preço Atual (R$)",
                 min_value=0.01,
-                value=22.16,
+                value=preco_default,
                 step=0.01,
                 format="%.2f"
             )
@@ -97,7 +148,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             lpa = st.number_input(
                 "LPA - Lucro por Ação (R$)",
                 min_value=0.0,
-                value=2.85,
+                value=lpa_default,
                 step=0.01,
                 format="%.2f"
             )
@@ -105,7 +156,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             vpa = st.number_input(
                 "VPA - Valor Patrimonial por Ação (R$)",
                 min_value=0.0,
-                value=18.50,
+                value=vpa_default,
                 step=0.01,
                 format="%.2f"
             )
@@ -113,7 +164,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             dps = st.number_input(
                 "DPS - Dividendos por Ação (R$)",
                 min_value=0.0,
-                value=1.20,
+                value=dps_default,
                 step=0.01,
                 format="%.2f"
             )
@@ -122,7 +173,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
                 "Crescimento Esperado (%)",
                 min_value=0.0,
                 max_value=100.0,
-                value=8.0,
+                value=crescimento_default,
                 step=0.5
             )
             
@@ -130,41 +181,47 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
     
     with col2:
         if submitted:
-            # Buscar dados reais
-            try:
-                client = OpLabClient()
-                fundamental_data = get_real_fundamental_data(ticker, client)
-                
-                # Atualizar com dados do formulário se fornecidos
-                if lpa > 0:
-                    fundamental_data.lpa = lpa
-                if vpa > 0:
-                    fundamental_data.vpa = vpa
-                if dps > 0:
-                    fundamental_data.dps = dps
-                if crescimento_esperado > 0:
-                    fundamental_data.crescimento_esperado = crescimento_esperado
-                
-                # Recalcular métricas
-                if fundamental_data.lpa > 0:
-                    fundamental_data.pl = fundamental_data.preco_atual / fundamental_data.lpa
-                if fundamental_data.vpa > 0:
-                    fundamental_data.pvp = fundamental_data.preco_atual / fundamental_data.vpa
-                if fundamental_data.dps > 0:
-                    fundamental_data.dividend_yield = (fundamental_data.dps / fundamental_data.preco_atual) * 100
-                if fundamental_data.lpa > 0 and fundamental_data.dps > 0:
-                    fundamental_data.payout = (fundamental_data.dps / fundamental_data.lpa) * 100
-                if fundamental_data.vpa > 0 and fundamental_data.lpa > 0:
-                    fundamental_data.roe = (fundamental_data.lpa / fundamental_data.vpa) * 100
-                if fundamental_data.crescimento_esperado > 0:
-                    fundamental_data.peg_ratio = fundamental_data.pl / fundamental_data.crescimento_esperado
-                
-                st.success(f"✅ Preço atual de {ticker}: R$ {fundamental_data.preco_atual:.2f}")
-                
-            except Exception as e:
-                st.error(f"❌ Erro ao buscar dados reais: {e}")
-                st.info("Verifique se o ticker existe e se as configurações OPLAB_API_* estão corretas.")
-                return
+            # Usar dados da sessão se disponíveis, senão buscar
+            if st.session_state.fundamental_data:
+                fundamental_data = st.session_state.fundamental_data
+                st.info(f"📡 Usando dados já carregados para {ticker}")
+            else:
+                # Buscar dados reais se não estiverem na sessão
+                try:
+                    client = OpLabClient()
+                    fundamental_data = get_real_fundamental_data(ticker, client)
+                    st.success(f"✅ Dados carregados para {ticker}")
+                except Exception as e:
+                    st.error(f"❌ Erro ao buscar dados reais: {e}")
+                    st.info("Verifique se o ticker existe e se as configurações OPLAB_API_* estão corretas.")
+                    return
+            
+            # Atualizar com dados do formulário se fornecidos
+            fundamental_data.preco_atual = preco_atual
+            if lpa > 0:
+                fundamental_data.lpa = lpa
+            if vpa > 0:
+                fundamental_data.vpa = vpa
+            if dps > 0:
+                fundamental_data.dps = dps
+            if crescimento_esperado > 0:
+                fundamental_data.crescimento_esperado = crescimento_esperado
+            
+            # Recalcular métricas
+            if fundamental_data.lpa > 0:
+                fundamental_data.pl = fundamental_data.preco_atual / fundamental_data.lpa
+            if fundamental_data.vpa > 0:
+                fundamental_data.pvp = fundamental_data.preco_atual / fundamental_data.vpa
+            if fundamental_data.dps > 0:
+                fundamental_data.dividend_yield = (fundamental_data.dps / fundamental_data.preco_atual) * 100
+            if fundamental_data.lpa > 0 and fundamental_data.dps > 0:
+                fundamental_data.payout = (fundamental_data.dps / fundamental_data.lpa) * 100
+            if fundamental_data.vpa > 0 and fundamental_data.lpa > 0:
+                fundamental_data.roe = (fundamental_data.lpa / fundamental_data.vpa) * 100
+            if fundamental_data.crescimento_esperado > 0:
+                fundamental_data.peg_ratio = fundamental_data.pl / fundamental_data.crescimento_esperado
+            
+            st.success(f"✅ Preço atual de {ticker}: R$ {fundamental_data.preco_atual:.2f}")
             
             # Análise
             result = analyze_fundamentals(
