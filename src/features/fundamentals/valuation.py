@@ -250,41 +250,95 @@ def get_real_fundamental_data(ticker: str, client: Optional[OpLabClient] = None)
 
 def _fetch_real_fundamentals(ticker: str, preco_atual: float) -> FundamentalData:
     """
-    Busca dados fundamentais reais via yfinance.
+    Busca dados fundamentais reais via StatusInvest (scraping).
+    Fallback para yfinance se StatusInvest falhar.
     """
     try:
-        import yfinance as yf
+        # Tentar StatusInvest primeiro (mais confiável para ações brasileiras)
+        return _fetch_from_statusinvest(ticker, preco_atual)
+    except Exception as e:
+        print(f"StatusInvest falhou para {ticker}: {e}")
+        try:
+            # Fallback para yfinance
+            return _fetch_from_yfinance(ticker, preco_atual)
+        except Exception as e2:
+            raise ValueError(f"Não foi possível obter dados fundamentais reais para {ticker}. StatusInvest: {e}, yfinance: {e2}")
+
+
+def _fetch_from_statusinvest(ticker: str, preco_atual: float) -> FundamentalData:
+    """
+    Busca dados fundamentais via scraping do StatusInvest.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+    
+    try:
+        # URL do StatusInvest para a ação
+        url = f"https://statusinvest.com.br/acoes/{ticker.lower()}"
         
-        # Adicionar .SA para ações brasileiras se necessário
-        yf_ticker = ticker if ticker.endswith('.SA') else f"{ticker}.SA"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         
-        stock = yf.Ticker(yf_ticker)
-        info = stock.info
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
         
-        # Extrair dados fundamentais
-        lpa = info.get('trailingEps', 0.0) or info.get('forwardEps', 0.0) or 0.0
-        vpa = info.get('bookValue', 0.0) or 0.0
-        dps = info.get('dividendRate', 0.0) or 0.0
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Se não encontrou dados, tentar dados trimestrais
-        if lpa <= 0:
+        # Função auxiliar para extrair valores
+        def extract_value(soup, label_text):
             try:
-                financials = stock.financials
-                if not financials.empty:
-                    # Pegar último trimestre
-                    latest_quarter = financials.columns[0]
-                    net_income = financials.loc['Net Income', latest_quarter] if 'Net Income' in financials.index else 0
-                    shares = info.get('sharesOutstanding', 1)
-                    lpa = net_income / shares if shares > 0 else 0.0
+                # Procurar por elementos que contenham o label
+                elements = soup.find_all(string=re.compile(label_text, re.IGNORECASE))
+                for element in elements:
+                    parent = element.parent
+                    if parent:
+                        # Procurar pelo valor próximo (diferentes estruturas HTML)
+                        value_element = None
+                        
+                        # Tentar diferentes seletores
+                        if parent.find_next_sibling():
+                            value_element = parent.find_next_sibling()
+                        elif parent.parent and parent.parent.find_next_sibling():
+                            value_element = parent.parent.find_next_sibling()
+                        elif parent.find_next():
+                            value_element = parent.find_next()
+                        
+                        # Procurar por elementos com classes específicas
+                        if not value_element:
+                            value_element = parent.find_next(class_=re.compile('value|number|price|data', re.IGNORECASE))
+                        
+                        if value_element:
+                            value_text = value_element.get_text(strip=True)
+                            # Extrair número (pode ter R$ ou %)
+                            value_match = re.search(r'[\d,.-]+', value_text.replace(',', '.'))
+                            if value_match:
+                                return float(value_match.group())
             except:
-                lpa = 0.0
+                pass
+            return 0.0
+        
+        # Extrair dados fundamentais usando seletores mais específicos
+        lpa = _extract_fundamental_value(soup, "LPA")
+        vpa = _extract_fundamental_value(soup, "VPA") 
+        dps = _extract_fundamental_value(soup, "DPS")
+        roe = _extract_fundamental_value(soup, "ROE")
+        
+        # Se não encontrou via scraping, tentar via API interna do StatusInvest
+        if lpa <= 0 or vpa <= 0:
+            api_data = _fetch_from_statusinvest_api(ticker)
+            if api_data:
+                lpa = api_data.get('lpa', lpa)
+                vpa = api_data.get('vpa', vpa)
+                dps = api_data.get('dps', dps)
+                roe = api_data.get('roe', roe)
         
         # Calcular métricas derivadas
         pl = preco_atual / lpa if lpa > 0 else 0.0
         pvp = preco_atual / vpa if vpa > 0 else 0.0
         dividend_yield = (dps / preco_atual) * 100 if preco_atual > 0 else 0.0
         payout = (dps / lpa) * 100 if lpa > 0 else 0.0
-        roe = (lpa / vpa) * 100 if vpa > 0 else 0.0
         
         # Estimativa de crescimento (baseada em ROE e payout)
         crescimento_esperado = roe * (1 - payout/100) if payout < 100 else 5.0
@@ -308,7 +362,186 @@ def _fetch_real_fundamentals(ticker: str, preco_atual: float) -> FundamentalData
         )
         
     except Exception as e:
-        raise ValueError(f"Não foi possível obter dados fundamentais reais para {ticker}: {e}")
+        raise ValueError(f"Erro ao buscar dados do StatusInvest para {ticker}: {e}")
+
+
+def _extract_fundamental_value(soup, metric_name):
+    """
+    Extrai valor fundamental específico do StatusInvest.
+    """
+    import re
+    
+    try:
+        # Procurar por elementos que contenham o nome da métrica
+        elements = soup.find_all(string=re.compile(metric_name, re.IGNORECASE))
+        
+        for element in elements:
+            parent = element.parent
+            if parent:
+                # Procurar pelo valor próximo
+                value_element = None
+                
+                # Tentar diferentes seletores
+                if parent.find_next_sibling():
+                    value_element = parent.find_next_sibling()
+                elif parent.parent and parent.parent.find_next_sibling():
+                    value_element = parent.parent.find_next_sibling()
+                elif parent.find_next():
+                    value_element = parent.find_next()
+                
+                # Procurar por elementos com classes específicas
+                if not value_element:
+                    value_element = parent.find_next(class_=re.compile('value|number|price|data', re.IGNORECASE))
+                
+                if value_element:
+                    value_text = value_element.get_text(strip=True)
+                    # Extrair número (pode ter R$ ou %)
+                    value_match = re.search(r'-?[\d,.-]+', value_text.replace(',', '.'))
+                    if value_match:
+                        try:
+                            return float(value_match.group())
+                        except ValueError:
+                            continue
+        
+        # Se não encontrou, tentar buscar em tabelas ou cards específicos
+        return _extract_from_cards(soup, metric_name)
+        
+    except Exception as e:
+        print(f"Erro ao extrair {metric_name}: {e}")
+        return 0.0
+
+
+def _extract_from_cards(soup, metric_name):
+    """
+    Extrai dados de cards/tabelas específicas do StatusInvest.
+    """
+    import re
+    
+    try:
+        # Procurar por cards com dados fundamentais
+        cards = soup.find_all(class_=re.compile('card|indicator|metric', re.IGNORECASE))
+        
+        for card in cards:
+            card_text = card.get_text()
+            if metric_name.lower() in card_text.lower():
+                # Procurar por números no card
+                numbers = re.findall(r'-?[\d,.-]+', card_text.replace(',', '.'))
+                if numbers:
+                    # Retornar o primeiro número válido encontrado
+                    for num_str in numbers:
+                        try:
+                            return float(num_str)
+                        except ValueError:
+                            continue
+        
+        return 0.0
+        
+    except Exception as e:
+        print(f"Erro ao extrair {metric_name} de cards: {e}")
+        return 0.0
+
+
+def _fetch_from_statusinvest_api(ticker: str) -> dict:
+    """
+    Busca dados via API interna do StatusInvest.
+    """
+    import requests
+    import json
+    
+    try:
+        # API interna do StatusInvest para dados fundamentais
+        api_url = "https://statusinvest.com.br/acoes/indicatorhistoric"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': f'https://statusinvest.com.br/acoes/{ticker.lower()}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Dados para a requisição
+        data = {
+            'codes': [ticker.upper()],
+            'time': 12
+        }
+        
+        response = requests.post(api_url, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if result and len(result) > 0:
+            stock_data = result[0]
+            return {
+                'lpa': stock_data.get('lpa', 0.0),
+                'vpa': stock_data.get('vpa', 0.0),
+                'dps': stock_data.get('dps', 0.0),
+                'roe': stock_data.get('roe', 0.0)
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Erro na API do StatusInvest: {e}")
+        return None
+
+
+def _fetch_from_yfinance(ticker: str, preco_atual: float) -> FundamentalData:
+    """
+    Fallback: busca dados fundamentais via yfinance.
+    """
+    import yfinance as yf
+    
+    # Adicionar .SA para ações brasileiras se necessário
+    yf_ticker = ticker if ticker.endswith('.SA') else f"{ticker}.SA"
+    
+    stock = yf.Ticker(yf_ticker)
+    info = stock.info
+    
+    # Extrair dados fundamentais
+    lpa = info.get('trailingEps', 0.0) or info.get('forwardEps', 0.0) or 0.0
+    vpa = info.get('bookValue', 0.0) or 0.0
+    dps = info.get('dividendRate', 0.0) or 0.0
+    
+    # Se não encontrou dados, tentar dados trimestrais
+    if lpa <= 0:
+        try:
+            financials = stock.financials
+            if not financials.empty:
+                # Pegar último trimestre
+                latest_quarter = financials.columns[0]
+                net_income = financials.loc['Net Income', latest_quarter] if 'Net Income' in financials.index else 0
+                shares = info.get('sharesOutstanding', 1)
+                lpa = net_income / shares if shares > 0 else 0.0
+        except:
+            lpa = 0.0
+    
+    # Calcular métricas derivadas
+    pl = preco_atual / lpa if lpa > 0 else 0.0
+    pvp = preco_atual / vpa if vpa > 0 else 0.0
+    dividend_yield = (dps / preco_atual) * 100 if preco_atual > 0 else 0.0
+    payout = (dps / lpa) * 100 if lpa > 0 else 0.0
+    roe = (lpa / vpa) * 100 if vpa > 0 else 0.0
+    
+    # Estimativa de crescimento (baseada em ROE e payout)
+    crescimento_esperado = roe * (1 - payout/100) if payout < 100 else 5.0
+    crescimento_esperado = max(0.0, min(crescimento_esperado, 20.0))  # Limitar entre 0-20%
+    
+    peg_ratio = pl / crescimento_esperado if crescimento_esperado > 0 else 0.0
+    
+    return FundamentalData(
+        ticker=ticker,
+        preco_atual=preco_atual,
+        lpa=lpa,
+        vpa=vpa,
+        dps=dps,
+        dividend_yield=dividend_yield,
+        payout=payout,
+        crescimento_esperado=crescimento_esperado,
+        roe=roe,
+        pl=pl,
+        pvp=pvp,
+        peg_ratio=peg_ratio
+    )
 
 
 def get_sample_fundamental_data(ticker: str) -> FundamentalData:
