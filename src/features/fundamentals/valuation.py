@@ -228,7 +228,7 @@ def analyze_fundamentals(
 def get_real_fundamental_data(ticker: str, client: Optional[OpLabClient] = None) -> FundamentalData:
     """
     Busca dados fundamentais reais via APIs.
-    Fallback para dados simulados se APIs não disponíveis.
+    SEMPRE busca dados reais - não há fallback para dados simulados.
     """
     client = client or OpLabClient()
     
@@ -239,31 +239,76 @@ def get_real_fundamental_data(ticker: str, client: Optional[OpLabClient] = None)
         if preco_atual <= 0:
             raise ValueError(f"Preço não encontrado para {ticker}")
         
-        # TODO: Integrar com APIs de fundamentos reais
-        # Por enquanto, usar dados simulados com preço real
-        sample_data = get_sample_fundamental_data(ticker)
-        sample_data.preco_atual = preco_atual
+        # Buscar dados fundamentais reais via yfinance
+        fundamental_data = _fetch_real_fundamentals(ticker, preco_atual)
         
-        # Recalcular métricas baseadas no preço real
-        if sample_data.lpa > 0:
-            sample_data.pl = preco_atual / sample_data.lpa
-        if sample_data.vpa > 0:
-            sample_data.pvp = preco_atual / sample_data.vpa
-        if sample_data.dps > 0:
-            sample_data.dividend_yield = (sample_data.dps / preco_atual) * 100
-        if sample_data.lpa > 0 and sample_data.dps > 0:
-            sample_data.payout = (sample_data.dps / sample_data.lpa) * 100
-        if sample_data.vpa > 0 and sample_data.lpa > 0:
-            sample_data.roe = (sample_data.lpa / sample_data.vpa) * 100
-        if sample_data.crescimento_esperado > 0:
-            sample_data.peg_ratio = sample_data.pl / sample_data.crescimento_esperado
-        
-        return sample_data
+        return fundamental_data
         
     except Exception as e:
-        print(f"Erro ao buscar dados reais para {ticker}: {e}")
-        # Fallback para dados simulados
-        return get_sample_fundamental_data(ticker)
+        raise ValueError(f"Erro ao buscar dados reais para {ticker}: {e}")
+
+
+def _fetch_real_fundamentals(ticker: str, preco_atual: float) -> FundamentalData:
+    """
+    Busca dados fundamentais reais via yfinance.
+    """
+    try:
+        import yfinance as yf
+        
+        # Adicionar .SA para ações brasileiras se necessário
+        yf_ticker = ticker if ticker.endswith('.SA') else f"{ticker}.SA"
+        
+        stock = yf.Ticker(yf_ticker)
+        info = stock.info
+        
+        # Extrair dados fundamentais
+        lpa = info.get('trailingEps', 0.0) or info.get('forwardEps', 0.0) or 0.0
+        vpa = info.get('bookValue', 0.0) or 0.0
+        dps = info.get('dividendRate', 0.0) or 0.0
+        
+        # Se não encontrou dados, tentar dados trimestrais
+        if lpa <= 0:
+            try:
+                financials = stock.financials
+                if not financials.empty:
+                    # Pegar último trimestre
+                    latest_quarter = financials.columns[0]
+                    net_income = financials.loc['Net Income', latest_quarter] if 'Net Income' in financials.index else 0
+                    shares = info.get('sharesOutstanding', 1)
+                    lpa = net_income / shares if shares > 0 else 0.0
+            except:
+                lpa = 0.0
+        
+        # Calcular métricas derivadas
+        pl = preco_atual / lpa if lpa > 0 else 0.0
+        pvp = preco_atual / vpa if vpa > 0 else 0.0
+        dividend_yield = (dps / preco_atual) * 100 if preco_atual > 0 else 0.0
+        payout = (dps / lpa) * 100 if lpa > 0 else 0.0
+        roe = (lpa / vpa) * 100 if vpa > 0 else 0.0
+        
+        # Estimativa de crescimento (baseada em ROE e payout)
+        crescimento_esperado = roe * (1 - payout/100) if payout < 100 else 5.0
+        crescimento_esperado = max(0.0, min(crescimento_esperado, 20.0))  # Limitar entre 0-20%
+        
+        peg_ratio = pl / crescimento_esperado if crescimento_esperado > 0 else 0.0
+        
+        return FundamentalData(
+            ticker=ticker,
+            preco_atual=preco_atual,
+            lpa=lpa,
+            vpa=vpa,
+            dps=dps,
+            dividend_yield=dividend_yield,
+            payout=payout,
+            crescimento_esperado=crescimento_esperado,
+            roe=roe,
+            pl=pl,
+            pvp=pvp,
+            peg_ratio=peg_ratio
+        )
+        
+    except Exception as e:
+        raise ValueError(f"Não foi possível obter dados fundamentais reais para {ticker}: {e}")
 
 
 def get_sample_fundamental_data(ticker: str) -> FundamentalData:
@@ -314,6 +359,48 @@ def get_sample_fundamental_data(ticker: str) -> FundamentalData:
             pl=6.5,
             pvp=2.3,
             peg_ratio=2.17
+        ),
+        "MOVI3": FundamentalData(
+            ticker="MOVI3",
+            preco_atual=9.08,
+            lpa=1.20,  # Ajustado para realidade (era 2.85)
+            vpa=11.50,  # Ajustado para realidade (era 18.50)
+            dps=0.25,   # Ajustado para realidade (era 1.20)
+            dividend_yield=2.75,
+            payout=20.83,
+            crescimento_esperado=8.0,
+            roe=10.43,
+            pl=7.57,
+            pvp=0.79,
+            peg_ratio=0.95
+        ),
+        "ITUB4": FundamentalData(
+            ticker="ITUB4",
+            preco_atual=32.50,
+            lpa=3.80,
+            vpa=28.20,
+            dps=1.50,
+            dividend_yield=4.62,
+            payout=39.47,
+            crescimento_esperado=7.0,
+            roe=13.48,
+            pl=8.55,
+            pvp=1.15,
+            peg_ratio=1.22
+        ),
+        "BBDC4": FundamentalData(
+            ticker="BBDC4",
+            preco_atual=28.90,
+            lpa=3.20,
+            vpa=24.50,
+            dps=1.30,
+            dividend_yield=4.50,
+            payout=40.63,
+            crescimento_esperado=6.5,
+            roe=13.06,
+            pl=9.03,
+            pvp=1.18,
+            peg_ratio=1.39
         )
     }
     
