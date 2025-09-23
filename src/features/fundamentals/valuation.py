@@ -539,7 +539,7 @@ def _extract_fundamentals_correctly(soup):
                             pass
                         elif 'lucro líquido' in context.lower() and 'patrimônio líquido' in context.lower():
                             roe = value
-                        elif 'dividendos pagos' in context.lower() and 'ano atual' in context.lower():
+                        elif 'ano atual' in context.lower() and 'dividendos' in context.lower():
                             dps = value
                             
                     except ValueError:
