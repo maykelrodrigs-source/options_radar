@@ -325,6 +325,9 @@ def _fetch_from_statusinvest(ticker: str, preco_atual: float) -> FundamentalData
         dps = _extract_fundamental_value(soup, "DPS")
         roe = _extract_fundamental_value(soup, "ROE")
         
+        # Debug: mostrar valores extraídos (removido para produção)
+        # print(f"StatusInvest {ticker}: LPA={lpa}, VPA={vpa}, DPS={dps}, ROE={roe}")
+        
         # Se não encontrou via scraping, tentar via API interna do StatusInvest
         if lpa <= 0 or vpa <= 0:
             api_data = _fetch_from_statusinvest_api(ticker)
@@ -341,7 +344,15 @@ def _fetch_from_statusinvest(ticker: str, preco_atual: float) -> FundamentalData
         payout = (dps / lpa) * 100 if lpa > 0 else 0.0
         
         # Estimativa de crescimento (baseada em ROE e payout)
-        crescimento_esperado = roe * (1 - payout/100) if payout < 100 else 5.0
+        if payout > 0 and payout < 100 and roe > 0:
+            # Se há dividendos, usar fórmula: ROE * (1 - payout/100)
+            crescimento_esperado = roe * (1 - payout/100)
+        elif roe > 0:
+            # Se não há dividendos, usar uma estimativa mais conservadora
+            crescimento_esperado = roe * 0.3  # 30% do ROE como crescimento
+        else:
+            crescimento_esperado = 5.0  # Crescimento padrão conservador
+        
         crescimento_esperado = max(0.0, min(crescimento_esperado, 20.0))  # Limitar entre 0-20%
         
         peg_ratio = pl / crescimento_esperado if crescimento_esperado > 0 else 0.0
@@ -408,6 +419,59 @@ def _extract_fundamental_value(soup, metric_name):
         
     except Exception as e:
         print(f"Erro ao extrair {metric_name}: {e}")
+        return 0.0
+
+
+def _extract_from_statusinvest_improved(soup, metric_name):
+    """
+    Versão melhorada para extrair dados específicos do StatusInvest.
+    """
+    import re
+    
+    try:
+        # Procurar por diferentes padrões de texto
+        patterns = [
+            f"{metric_name}",
+            f"{metric_name}:",
+            f"{metric_name} -",
+            f"{metric_name}="
+        ]
+        
+        for pattern in patterns:
+            elements = soup.find_all(string=re.compile(pattern, re.IGNORECASE))
+            
+            for element in elements:
+                parent = element.parent
+                if parent:
+                    # Procurar pelo valor próximo
+                    value_element = None
+                    
+                    # Tentar diferentes seletores
+                    if parent.find_next_sibling():
+                        value_element = parent.find_next_sibling()
+                    elif parent.parent and parent.parent.find_next_sibling():
+                        value_element = parent.parent.find_next_sibling()
+                    elif parent.find_next():
+                        value_element = parent.find_next()
+                    
+                    # Procurar por elementos com classes específicas
+                    if not value_element:
+                        value_element = parent.find_next(class_=re.compile('value|number|price|data', re.IGNORECASE))
+                    
+                    if value_element:
+                        value_text = value_element.get_text(strip=True)
+                        # Extrair número (pode ter R$ ou %)
+                        value_match = re.search(r'-?[\d,.-]+', value_text.replace(',', '.'))
+                        if value_match:
+                            try:
+                                return float(value_match.group())
+                            except ValueError:
+                                continue
+        
+        return 0.0
+        
+    except Exception as e:
+        print(f"Erro ao extrair {metric_name} (melhorado): {e}")
         return 0.0
 
 
