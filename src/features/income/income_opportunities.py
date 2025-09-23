@@ -712,7 +712,7 @@ def render_income_opportunities_page():
                 key="income_top_opportunities"
             )
         
-        submitted = st.form_submit_button("🔍 Buscar Oportunidades", use_container_width=True)
+        submitted = st.form_submit_button("🔍 Buscar")
     
     if submitted:
         with st.spinner("Analisando mercado de opções... Isso pode levar alguns minutos."):
@@ -810,11 +810,10 @@ def render_income_opportunities_page():
                         for i, (sector, count) in enumerate(sector_counts.head(4).items()):
                             with sector_cols[i % 4]:
                                 st.metric(sector, f"{count} opções")
-                        
             except Exception as e:
                 st.error(f"❌ Erro ao buscar oportunidades: {e}")
     else:
-        st.info("👆 Configure os parâmetros e clique em 'Buscar Oportunidades' para começar")
+        st.info("👆 Configure os parâmetros e clique em 'Buscar' para começar")
         
         # Explicação da estratégia
         with st.expander("ℹ️ Como funciona"):

@@ -1,0 +1,3 @@
+ticker,eval_days,threshold,sl_factor,rolling_window,total_signals,call_count,put_count,neutral_count,overall_accuracy,call_accuracy,put_accuracy,puts_gates_relaxed,puts_bearish_penalty,success
+PETR4,10,0.15,0.6,5,13,2,3,8,23.076923076923077,100.0,33.33333333333333,0,0,True
+PETR4,10,0.25,0.6,5,13,2,3,8,23.076923076923077,100.0,33.33333333333333,0,0,True

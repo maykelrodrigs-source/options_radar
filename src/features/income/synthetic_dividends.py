@@ -94,6 +94,27 @@ def _annualize_return(return_pct: float, days: int) -> float:
     return annual_return
 
 
+def _calculate_score(annual_return: float, exercise_prob: float) -> float:
+    """Calcula score de 0-100 balanceando retorno vs risco.
+    
+    Score = (Retorno Anualizado * 2) - (Prob. Exercício * 1.5)
+    - Retorno tem peso 2x maior que risco
+    - Score máximo teórico: 100 (50% retorno, 0% risco)
+    - Score mínimo: 0
+    """
+    # Componente de retorno (peso 2x)
+    return_component = min(annual_return * 2, 100)  # Cap em 50% retorno = 100 pontos
+    
+    # Componente de risco (penalização)
+    risk_penalty = exercise_prob * 1.5  # Penalização de 1.5x a prob de exercício
+    
+    # Score final
+    score = max(0, return_component - risk_penalty)
+    
+    # Normalizar para 0-100
+    return min(100, max(0, round(score, 1)))
+
+
 def _build_rationale(option_type: str, distance_pct: float, premium: float, spot: float, 
                      days_to_expiry: int, prob_exercise: float) -> str:
     """Constrói justificativa concisa em 1 linha."""
@@ -127,7 +148,7 @@ def find_synthetic_dividend_options(
     if chain.empty:
         return pd.DataFrame(columns=[
             "Opção", "Estratégia", "Strike", "Validade", "Prêmio (R$)", 
-            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Contratos ativos", "Justificativa"
+            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Score", "Contratos ativos", "Justificativa"
         ])
 
     # Normalizações necessárias
@@ -146,7 +167,7 @@ def find_synthetic_dividend_options(
     if chain.empty:
         return pd.DataFrame(columns=[
             "Opção", "Estratégia", "Strike", "Validade", "Prêmio (R$)", 
-            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Contratos ativos", "Justificativa"
+            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Score", "Contratos ativos", "Justificativa"
         ])
 
     # Cálculos auxiliares - preço baseado na estratégia
@@ -158,7 +179,7 @@ def find_synthetic_dividend_options(
     if chain.empty:
         return pd.DataFrame(columns=[
             "Opção", "Estratégia", "Strike", "Validade", "Prêmio (R$)", 
-            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Contratos ativos", "Justificativa"
+            "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Score", "Contratos ativos", "Justificativa"
         ])
     
     chain["distance_pct"] = (chain["strike"] - spot) / spot * 100.0
@@ -206,8 +227,8 @@ def find_synthetic_dividend_options(
     def to_rows(df: pd.DataFrame, strategy: Strategy) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame(columns=[
-                "Ativo", "Ticker (opção)", "Estratégia", "Strike", "Distância (%)", "Vencimento",
-                "Prêmio (R$)", "Delta", "Prob. Exercício", "Retorno (%)", "Justificativa"
+                "Opção", "Estratégia", "Strike", "Validade", "Prêmio (R$)", 
+                "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Score", "Contratos ativos", "Justificativa"
             ])
         strike_num = pd.to_numeric(df["strike"], errors="coerce")
         distance_num = pd.to_numeric(df["distance_pct"], errors="coerce")
@@ -229,10 +250,16 @@ def find_synthetic_dividend_options(
         
         # Retorno anualizado
         retorno_annual = []
+        scores = []
         for i, (_, row) in enumerate(df.iterrows()):
             annual_return = _annualize_return(retorno_pct.iloc[i], row.days_to_expiry)
             retorno_annual.append(annual_return)
+            
+            # Calcular score balanceando retorno vs risco
+            score = _calculate_score(annual_return, row.exercise_prob)
+            scores.append(score)
         retorno_annual = pd.Series(retorno_annual, index=df.index)
+        scores = pd.Series(scores, index=df.index)
         
         # Valor financeiro do volume (volume × prêmio × 100 contratos)
         volume_financeiro = (volume_num * premium_num * 100).round(0)
@@ -258,11 +285,12 @@ def find_synthetic_dividend_options(
             "Retorno (%)": retorno_pct,
             "Retorno a.a. (%)": retorno_annual,
             "Prob. Exercício (%)": prob_num.astype(int),
+            "Score": scores,
             "Contratos ativos": volume_num.astype(int),
             "Justificativa": justificativas,
         })
-        # Ordena por maior retorno anualizado primeiro
-        out = out.sort_values(by=["Retorno a.a. (%)"], ascending=[False])
+        # Ordena por maior score primeiro (balanceia retorno vs risco)
+        out = out.sort_values(by=["Score"], ascending=[False])
         return out
 
     call_rows = to_rows(calls, "CALL")
@@ -279,9 +307,9 @@ def find_synthetic_dividend_options(
             "Retorno (%)", "Retorno a.a. (%)", "Prob. Exercício (%)", "Contratos ativos", "Justificativa"
         ])
     
-    # Ordenação final global: por maior retorno anualizado
+    # Ordenação final global: por maior score (balanceia retorno vs risco)
     if not result.empty:
-        result = result.sort_values(by=["Retorno a.a. (%)"], ascending=[False])
+        result = result.sort_values(by=["Score"], ascending=[False])
     return result
 
 

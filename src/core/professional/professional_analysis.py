@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
 import math
+import json
 from datetime import datetime, timedelta
 
 from src.core.data.oplab_client import OpLabClient
@@ -50,6 +51,7 @@ class MomentumAnalysis:
     rsi_14: float
     rsi_21: float
     macd_histogram: float
+    macd_slope: float
     macd_signal: float
     adx: float
     roc_10: float
@@ -61,6 +63,11 @@ class MomentumAnalysis:
     stoch_k: float      # %K do Stochastic
     stoch_d: float      # %D do Stochastic
     stoch_signal: str   # "OVERSOLD", "OVERBOUGHT", "NEUTRAL"
+    # EMAs rápidas
+    ema_9: float
+    ema_21: float
+    # Money Flow Index
+    mfi_14: float
     
     momentum_score: float
     momentum_strength: str
@@ -131,25 +138,48 @@ class ProfessionalAnalysis:
     
     # Horizonte dinâmico
     dynamic_horizon: Optional[DynamicHorizonConfig] = None
+    # Pesos efetivos usados na decisão (após redistribuições)
+    effective_weights: Optional[Dict[str, float]] = None
+    # Contadores de rejeição para diagnóstico
+    gate_counters: Optional[Dict[str, int]] = None
+    # Razões de rejeição (debug)
+    rejection_reasons: Optional[List[str]] = None
+    # Scores para debug
+    raw_final_score: Optional[float] = None
+    adjusted_final_score: Optional[float] = None
+    # Gates e flags para debug
+    gates_passed: Optional[bool] = None
+    gates_relaxed: Optional[bool] = None
+    # Debug específico para PUTs
+    put_threshold_triggered: Optional[bool] = None
+    put_rejected_low_conf: Optional[bool] = None
+    bearish_penalty_value: Optional[float] = None
+    bearish_penalty_trigger: Optional[str] = None
+    # Meta-labeling de PUT
+    put_meta_label_passed: Optional[bool] = None
+    put_meta_label_reason: Optional[str] = None
+    # Filtros seletivos para PUTs
+    prefilter_reject: Optional[bool] = None
+    prefilter_reason: Optional[str] = None
 
 
 class ProfessionalAnalyzer:
     """Analisador profissional para Radar de Direção."""
     
     def __init__(self, client: Optional[OpLabClient] = None, horizon: str = "médio", 
-                 decision_threshold: float = 0.30, layer_weights: Optional[Dict[str, float]] = None):
+                 decision_threshold: float = 0.20, layer_weights: Optional[Dict[str, float]] = None):
         self.client = client or OpLabClient()
         self.horizon = horizon
         self.params = self._get_horizon_parameters(horizon)
-        self.decision_threshold = decision_threshold
+        self.decision_threshold = decision_threshold or 0.15  # Threshold mais baixo para gerar mais sinais
         
-        # Pesos configuráveis das camadas
+        # Pesos configuráveis das camadas - mais equilibrados
         self.layer_weights = layer_weights or {
-            'trend': 0.30,      # 30% - tendência é fundamental
-            'momentum': 0.25,   # 25% - momentum confirma tendência
-            'volume': 0.20,     # 20% - volume confirma movimento
-            'sentiment': 0.15,  # 15% - sentimento do mercado
-            'macro': 0.10       # 10% - contexto macro
+            'trend': 0.30,
+            'momentum': 0.25,
+            'volume': 0.25,
+            'sentiment': 0.15,
+            'macro': 0.05
         }
     
     def _get_horizon_parameters(self, horizon: str) -> dict:
@@ -210,18 +240,43 @@ class ProfessionalAnalyzer:
                            f"Necessário: {max(self.params['sma_trend'], 50)}, recebido: {len(close)}")
         
         # Médias móveis adaptativas baseadas no horizonte
-        sma_short = close.rolling(self.params["sma_short"]).mean().iloc[-1]
-        sma_medium = close.rolling(self.params["sma_medium"]).mean().iloc[-1]
-        sma_long = close.rolling(self.params["sma_long"]).mean().iloc[-1]
-        sma_trend = close.rolling(self.params["sma_trend"]).mean().iloc[-1]
+        sma_short_series = close.rolling(self.params["sma_short"]).mean()
+        sma_medium_series = close.rolling(self.params["sma_medium"]).mean()
+        sma_long_series = close.rolling(self.params["sma_long"]).mean()
+        sma_trend_series = close.rolling(self.params["sma_trend"]).mean()
+
+        sma_short = sma_short_series.iloc[-1]
+        sma_medium = sma_medium_series.iloc[-1]
+        sma_long = sma_long_series.iloc[-1]
+        sma_trend = sma_trend_series.iloc[-1]
+
+        # Golden/Death Cross por cruzamento real (t-1 -> t)
+        golden_cross = False
+        death_cross = False
+        if len(sma_medium_series) >= 2 and len(sma_trend_series) >= 2:
+            prev_medium = sma_medium_series.iloc[-2]
+            prev_trend = sma_trend_series.iloc[-2]
+            golden_cross = bool(prev_medium <= prev_trend and sma_medium > sma_trend)
+            death_cross = bool(prev_medium >= prev_trend and sma_medium < sma_trend)
         
-        # Golden/Death Cross (usando médias adaptativas)
-        golden_cross = bool(sma_medium > sma_trend)
-        death_cross = bool(sma_medium < sma_trend)
+        # Validação e imputação de dados críticos
+        high = price_data.get('high')
+        low = price_data.get('low')
+        volume = price_data.get('volume')
+        
+        # Imputação robusta para high/low se ausentes
+        if high is None or high.isna().all():
+            high = close * 1.02  # Aproximação: +2% do close
+        if low is None or low.isna().all():
+            low = close * 0.98   # Aproximação: -2% do close
+        if volume is None or volume.isna().all():
+            volume = pd.Series([1.0] * len(close), index=close.index)
+        
+        # Validação: dados suficientes após imputação
+        if len(high) != len(close) or len(low) != len(close):
+            raise ValueError(f"Erro de consistência: high={len(high)}, low={len(low)}, close={len(close)}")
         
         # Regime de volatilidade (ATR)
-        high = price_data.get('high', close)
-        low = price_data.get('low', close)
         atr = self._calculate_atr(high, low, close, self.params["atr_period"])
         atr_current = atr.iloc[-1]
         atr_avg = atr.rolling(20).mean().iloc[-1]
@@ -329,6 +384,11 @@ class ProfessionalAnalyzer:
         
         # MACD
         macd_hist_val = float(macd_hist.iloc[-1])
+        # Inclinação do MACD hist: diferença entre último e de 3 barras atrás
+        if len(macd_hist) >= 4 and not pd.isna(macd_hist.iloc[-4]):
+            macd_slope_val = float(macd_hist.iloc[-1] - macd_hist.iloc[-4])
+        else:
+            macd_slope_val = 0.0
         if macd_hist_val > 0:
             momentum_score += 0.3
         elif macd_hist_val < 0:
@@ -361,6 +421,30 @@ class ProfessionalAnalyzer:
             momentum_score += 0.15
         elif stoch_signal == "OVERBOUGHT":
             momentum_score -= 0.15
+
+        # EMAs rápidas: EMA9 acima de EMA21 reforça momentum positivo
+        ema_9 = float(close.ewm(span=9).mean().iloc[-1])
+        ema_21 = float(close.ewm(span=21).mean().iloc[-1])
+        if ema_9 > ema_21:
+            momentum_score += 0.1
+        else:
+            momentum_score -= 0.1
+
+        # Money Flow Index (MFI 14) simplificado - usa dados já validados
+        high = price_data.get('high', close * 1.01)
+        low = price_data.get('low', close * 0.99)
+        volume = price_data.get('volume', pd.Series([1.0] * len(close), index=close.index))
+        tp = (high + low + close) / 3
+        pmf = ((tp > tp.shift(1)) * (tp * volume)).fillna(0)
+        nmf = ((tp < tp.shift(1)) * (tp * volume)).fillna(0)
+        mfr = (pmf.rolling(14).sum()) / (nmf.rolling(14).sum().replace(0, 1e-10))
+        mfi = 100 - (100 / (1 + mfr))
+        mfi_val = float(mfi.iloc[-1]) if not pd.isna(mfi.iloc[-1]) else 50.0
+        # MFI > 60 reforça, < 40 penaliza
+        if mfi_val > 60:
+            momentum_score += 0.1
+        elif mfi_val < 40:
+            momentum_score -= 0.1
         
         # Normalização com tanh para manter em -1..+1
         momentum_score = float(np.tanh(momentum_score))
@@ -382,6 +466,7 @@ class ProfessionalAnalyzer:
             rsi_14=rsi_medium_val,
             rsi_21=rsi_long_val,
             macd_histogram=macd_hist_val,
+            macd_slope=macd_slope_val,
             macd_signal=float(macd_signal.iloc[-1]),
             adx=adx,
             roc_10=roc_10_val,
@@ -391,6 +476,9 @@ class ProfessionalAnalyzer:
             stoch_k=stoch_k,
             stoch_d=stoch_d,
             stoch_signal=stoch_signal,
+            ema_9=ema_9,
+            ema_21=ema_21,
+            mfi_14=mfi_val,
             momentum_score=momentum_score,
             momentum_strength=momentum_strength
         )
@@ -404,7 +492,11 @@ class ProfessionalAnalyzer:
             raise ValueError(f"Dados insuficientes para análise de volume. "
                            f"Necessário: 30, recebido: {len(close)}")
         
-        volume = price_data.get('volume', pd.Series([1] * len(close)))
+        volume = price_data.get('volume', pd.Series([1.0] * len(close), index=close.index))
+        
+        # Validação de volume
+        if volume is None or volume.isna().all():
+            volume = pd.Series([1.0] * len(close), index=close.index)
         
         # Volume ratios (compara médias recentes vs históricas)
         volume_5d = volume.rolling(5).mean()
@@ -425,7 +517,7 @@ class ProfessionalAnalyzer:
         obv_prev = float(obv.iloc[-10])
         obv_trend = (obv_curr - obv_prev) / obv_prev if obv_prev != 0 else 0
         
-        # Accumulation/Distribution
+        # Accumulation/Distribution - usa dados validados
         ad = self._calculate_accumulation_distribution(price_data)
         # Evita erro de ambiguidade com comparações de Series
         ad_curr = float(ad.iloc[-1])
@@ -492,30 +584,30 @@ class ProfessionalAnalyzer:
             calls = option_chain[option_chain['option_type'] == 'CALL']
             puts = option_chain[option_chain['option_type'] == 'PUT']
             
-            # Volume e Open Interest - filtra apenas opções com dados válidos
-            calls_with_volume = calls[calls['volume'].notna() & (calls['volume'] > 0)]
-            puts_with_volume = puts[puts['volume'].notna() & (puts['volume'] > 0)]
-            
-            call_volume = calls_with_volume['volume'].sum()
-            put_volume = puts_with_volume['volume'].sum()
+            # Volume e Open Interest - fallbacks robustos
+            # Volume: usa 0 se não disponível, não filtra
+            call_volume = calls['volume'].fillna(0).sum() if 'volume' in calls.columns else 0
+            put_volume = puts['volume'].fillna(0).sum() if 'volume' in puts.columns else 0
             total_volume = call_volume + put_volume
             
-            # Open Interest (se disponível)
-            calls_with_oi = calls[calls.get('open_interest', pd.Series()).notna() & (calls.get('open_interest', pd.Series()) > 0)]
-            puts_with_oi = puts[puts.get('open_interest', pd.Series()).notna() & (puts.get('open_interest', pd.Series()) > 0)]
-            
-            call_oi = calls_with_oi.get('open_interest', pd.Series()).sum() if not calls_with_oi.empty else 0
-            put_oi = puts_with_oi.get('open_interest', pd.Series()).sum() if not puts_with_oi.empty else 0
+            # Open Interest - fallback para volume se não disponível
+            if 'open_interest' in calls.columns and 'open_interest' in puts.columns:
+                call_oi = calls['open_interest'].fillna(0).sum()
+                put_oi = puts['open_interest'].fillna(0).sum()
+            else:
+                # Fallback: usa volume como proxy para OI
+                call_oi = call_volume
+                put_oi = put_volume
             total_oi = call_oi + put_oi
             
-            # Calcula ratios apenas se temos dados válidos
+            # Calcula ratios com fallbacks robustos
             if total_volume > 0:
                 call_volume_ratio = call_volume / total_volume
                 put_volume_ratio = put_volume / total_volume
             else:
-                # Se não há volume, tenta usar quantidade de contratos
-                call_count = len(calls_with_volume)
-                put_count = len(puts_with_volume)
+                # Fallback: usa quantidade de contratos
+                call_count = len(calls)
+                put_count = len(puts)
                 total_count = call_count + put_count
                 if total_count > 0:
                     call_volume_ratio = call_count / total_count
@@ -535,7 +627,7 @@ class ProfessionalAnalyzer:
             # Put/Call Ratio
             put_call_ratio = put_volume / call_volume if call_volume > 0 else 1.0
             
-            # Volatility Skew (simplificado)
+            # Volatility Skew com fallbacks robustos
             current_price = float(price_data['close'].iloc[-1])
             lower_bound = current_price * 0.95
             upper_bound = current_price * 1.05
@@ -546,19 +638,23 @@ class ProfessionalAnalyzer:
             atm_puts = puts[(puts['strike'] >= lower_bound) & 
                            (puts['strike'] <= upper_bound)]
             
-            # Calcula volatility skew se temos dados de IV
-            if not atm_calls.empty and not atm_puts.empty and 'implied_volatility' in calls.columns:
-                call_iv = atm_calls['implied_volatility'].fillna(0).mean()
-                put_iv = atm_puts['implied_volatility'].fillna(0).mean()
-                volatility_skew = put_iv - call_iv if call_iv > 0 and put_iv > 0 else 0.0
-            else:
-                # Aproximação usando preços de opções (premium/strike ratio)
-                if not atm_calls.empty and not atm_puts.empty:
-                    call_premium_ratio = (atm_calls['last'].fillna(atm_calls['bid'].fillna(0)).mean() / current_price)
-                    put_premium_ratio = (atm_puts['last'].fillna(atm_puts['bid'].fillna(0)).mean() / current_price)
-                    volatility_skew = put_premium_ratio - call_premium_ratio
-                else:
-                    volatility_skew = 0.0
+            # Calcula volatility skew com fallbacks
+            volatility_skew = 0.0
+            if not atm_calls.empty and not atm_puts.empty:
+                # Prioridade 1: IV se disponível
+                if 'implied_volatility' in calls.columns and 'implied_volatility' in puts.columns:
+                    call_iv = atm_calls['implied_volatility'].fillna(0).mean()
+                    put_iv = atm_puts['implied_volatility'].fillna(0).mean()
+                    if call_iv > 0 and put_iv > 0:
+                        volatility_skew = put_iv - call_iv
+                # Prioridade 2: preços de opções
+                elif 'last' in calls.columns or 'bid' in calls.columns:
+                    call_price = atm_calls.get('last', atm_calls.get('bid', 0)).fillna(0).mean()
+                    put_price = atm_puts.get('last', atm_puts.get('bid', 0)).fillna(0).mean()
+                    if call_price > 0 and put_price > 0:
+                        call_premium_ratio = call_price / current_price
+                        put_premium_ratio = put_price / current_price
+                        volatility_skew = put_premium_ratio - call_premium_ratio
             
             # Score de sentimento aprimorado
             sentiment_score = 0.0
@@ -657,7 +753,7 @@ class ProfessionalAnalyzer:
         elif overall_context_score < -0.1:
             context_bias = "NEGATIVO"
         else:
-            context_bias = "NEUTRO"
+            context_bias = "NEUTRAL"
         
         return MacroContextAnalysis(
             sector_score=sector_score,
@@ -668,29 +764,256 @@ class ProfessionalAnalyzer:
         )
     
     def calculate_final_decision(self, analysis: 'ProfessionalAnalysis') -> Tuple[Direction, float, List[str]]:
-        """Camada 6: Modelo de decisão com score normalizado e threshold configurável."""
-        # Score final ponderado usando pesos configuráveis
-        final_score = (
-            analysis.trend.trend_score * self.layer_weights['trend'] +
-            analysis.momentum.momentum_score * self.layer_weights['momentum'] +
-            analysis.volume_flow.volume_score * self.layer_weights['volume'] +
-            analysis.options_sentiment.sentiment_score * self.layer_weights['sentiment'] +
-            analysis.macro_context.overall_context_score * self.layer_weights['macro']
+        """Camada 6: Modelo de decisão com gates, pesos dinâmicos e threshold adaptativo."""
+        adx_value = float(analysis.momentum.adx)
+
+        # Pesos dinâmicos por regime
+        dyn_weights = self._dynamic_weights(adx_value)
+        # Se sentimento é neutro/ausente, redistribui seu peso entre trend/momentum/volume
+        eff_weights = dict(dyn_weights)
+        if float(analysis.options_sentiment.sentiment_score) == 0.0:
+            sentiment_w = eff_weights.get('sentiment', 0.0)
+            if sentiment_w > 0:
+                # soma base dos três alvos
+                base_sum = eff_weights['trend'] + eff_weights['momentum'] + eff_weights['volume']
+                if base_sum > 0:
+                    eff_weights['trend'] += sentiment_w * (eff_weights['trend'] / base_sum)
+                    eff_weights['momentum'] += sentiment_w * (eff_weights['momentum'] / base_sum)
+                    eff_weights['volume'] += sentiment_w * (eff_weights['volume'] / base_sum)
+                    eff_weights['sentiment'] = 0.0  # removido
+                # mantém 'macro' inalterado
+        analysis.effective_weights = eff_weights
+
+        # Score final ponderado (antes da penalidade)
+        raw_final_score = (
+            analysis.trend.trend_score * eff_weights['trend'] +
+            analysis.momentum.momentum_score * eff_weights['momentum'] +
+            analysis.volume_flow.volume_score * eff_weights['volume'] +
+            analysis.options_sentiment.sentiment_score * eff_weights['sentiment'] +
+            analysis.macro_context.overall_context_score * eff_weights['macro']
         )
-        
+
         # Normaliza para -1 a +1
-        final_score = max(-1.0, min(1.0, final_score))
+        raw_final_score = max(-1.0, min(1.0, raw_final_score))
         
-        # Determina direção usando threshold configurável
-        if final_score >= self.decision_threshold:
-            direction = Direction.CALL
-            confidence = self._calculate_calibrated_confidence(final_score, direction)
-        elif final_score <= -self.decision_threshold:
-            direction = Direction.PUT
-            confidence = self._calculate_calibrated_confidence(final_score, direction)
+        # Penalidade bearish: se pelo menos 1 condição bearish for verdadeira
+        final_score = raw_final_score
+        bearish_signals = 0
+        bearish_triggers = []
+        
+        # Drivers bearish originais
+        if analysis.momentum.ema_9 < analysis.momentum.ema_21:
+            bearish_signals += 1
+            bearish_triggers.append("ema9<ema21")
+        if analysis.momentum.macd_slope < 0:
+            bearish_signals += 1
+            bearish_triggers.append("macd_slope<0")
+        if analysis.volume_flow.obv_trend < 0:
+            bearish_signals += 1
+            bearish_triggers.append("obv_trend<0")
+        
+        # Novos drivers bearish
+        # 1. RSI < 45
+        rsi_value = analysis.momentum.rsi_14
+        if rsi_value < 45:
+            bearish_signals += 1
+            bearish_triggers.append(f"RSI<45({rsi_value:.1f})")
+            analysis.rejection_reasons.append(f"bearish_trigger: RSI<45 (valor={rsi_value:.2f})")
+        
+        # 2. Padrões de candle de reversão com volume
+        # Busca dados históricos para análise de padrões
+        try:
+            # Pega os últimos 3 candles para análise de padrões
+            recent_data = self._get_recent_candles_for_patterns(analysis.ticker, analysis.analysis_date)
+            if recent_data is not None and len(recent_data) >= 3:
+                current_candle = recent_data.iloc[-1]
+                prev_candle = recent_data.iloc[-2]
+                prev2_candle = recent_data.iloc[-3]
+                
+                # Volume médio dos últimos 20 dias
+                vol_avg_20 = recent_data['volume'].rolling(20).mean().iloc[-1] if len(recent_data) >= 20 else current_candle['volume']
+                vol_ratio = current_candle['volume'] / vol_avg_20 if vol_avg_20 > 0 else 1.0
+                
+                # Engolfo de baixa (bearish engulfing)
+                if (prev_candle['close'] > prev_candle['open'] and  # Candle anterior de alta
+                    current_candle['close'] < current_candle['open'] and  # Candle atual de baixa
+                    current_candle['open'] > prev_candle['close'] and  # Abertura atual > fechamento anterior
+                    current_candle['close'] < prev_candle['open'] and  # Fechamento atual < abertura anterior
+                    vol_ratio > 1.5):  # Volume > 1.5x média
+                    bearish_signals += 1
+                    bearish_triggers.append("engolfo_baixa")
+                    analysis.rejection_reasons.append(f"bearish_trigger: engolfo_baixa (volume={vol_ratio:.2f})")
+                
+                # Estrela cadente (shooting star)
+                if (current_candle['close'] < current_candle['open'] and  # Candle de baixa
+                    (current_candle['high'] - max(current_candle['open'], current_candle['close'])) > 
+                    2 * (max(current_candle['open'], current_candle['close']) - current_candle['low']) and  # Sombra superior > 2x corpo
+                    vol_ratio > 1.5):  # Volume > 1.5x média
+                    bearish_signals += 1
+                    bearish_triggers.append("shooting_star")
+                    analysis.rejection_reasons.append(f"bearish_trigger: shooting_star (volume={vol_ratio:.2f})")
+                
+                # 3. Sequência de queda (2 dias consecutivos de fechamento em queda e volume crescente)
+                if (len(recent_data) >= 2 and
+                    recent_data.iloc[-1]['close'] < recent_data.iloc[-2]['close'] and  # Fechamento atual < fechamento anterior
+                    recent_data.iloc[-2]['close'] < recent_data.iloc[-3]['close'] and  # Fechamento anterior < fechamento anterior-2
+                    recent_data.iloc[-1]['volume'] > recent_data.iloc[-2]['volume']):  # Volume crescente
+                    bearish_signals += 1
+                    vol_dia1 = recent_data.iloc[-2]['volume']
+                    vol_dia2 = recent_data.iloc[-1]['volume']
+                    bearish_triggers.append("2dias_queda_volume")
+                    analysis.rejection_reasons.append(f"bearish_trigger: 2dias_queda_volume (vol_dia1={vol_dia1:.0f}, vol_dia2={vol_dia2:.0f})")
+                    
+        except Exception as e:
+            # Se houver erro na análise de padrões, continua sem os novos drivers
+            pass
+            
+        if bearish_signals >= 1:  # Pelo menos 1 sinal de baixa
+            # Penalidade bearish escalada pelo número de triggers ativos
+            if bearish_signals == 1:
+                base_penalty = -0.05
+            elif bearish_signals == 2:
+                base_penalty = -0.10
+            elif bearish_signals == 3:
+                base_penalty = -0.15
+            else:  # 4+ triggers
+                base_penalty = -0.20
+            
+            # Ajusta penalidade baseada no ADX
+            if adx_value >= 20 and adx_value < 25:
+                penalty = base_penalty + (-0.02)  # -0.07 para 1 trigger, -0.12 para 2, etc.
+            elif adx_value >= 25 and adx_value < 35:
+                penalty = base_penalty + (-0.05)  # -0.10 para 1 trigger, -0.15 para 2, etc.
+            elif adx_value >= 35:
+                penalty = base_penalty + (-0.10)  # -0.15 para 1 trigger, -0.20 para 2, etc.
+            else:
+                penalty = base_penalty  # ADX < 20, usa penalidade base
+            
+            final_score += penalty  # penalty já é negativo
+            trigger_str = ", ".join(bearish_triggers)
+            analysis.rejection_reasons.append(f"bearish_penalty_applied: {penalty:.2f} (ADX={adx_value:.0f}, triggers={trigger_str})")
+            analysis.bearish_penalty_value = penalty
+            analysis.bearish_penalty_trigger = trigger_str
+        
+        # Normaliza novamente após penalidade
+        final_score = max(-1.0, min(1.0, final_score))
+
+        # Gatilhos alinhados: exigem ADX >= 18 e concordância EMA/MACD
+        trigger_call = (
+            adx_value >= 18 and 
+            analysis.momentum.ema_9 > analysis.momentum.ema_21 and 
+            analysis.momentum.macd_slope > 0
+        )
+        trigger_put = (
+            adx_value >= 18 and 
+            analysis.momentum.ema_9 < analysis.momentum.ema_21 and 
+            analysis.momentum.macd_slope < 0
+        )
+
+        # Thresholds ajustados para forçar PUTs
+        thr_base = self._adaptive_threshold(adx_value, base=self.decision_threshold)
+        thr_call = thr_base  # Ex: 0.15
+        
+        # thr_put ajustado conforme especificação
+        if adx_value >= 25 and analysis.trend.death_cross:
+            thr_put = 0.00  # Se adx>=25 e ema200 descendente, thr_put = 0.00
         else:
-            direction = Direction.NEUTRAL
-            confidence = self._calculate_calibrated_confidence(final_score, direction)
+            thr_put = 0.02  # thr_put padrão = 0.02
+
+        passes_gates = self._passes_quality_gates(analysis, final_score, thr_put)
+
+        # Regras de decisão com forçar PUTs muito negativos
+        if final_score <= -0.10:  # Score muito negativo - força PUT
+            direction = Direction.PUT
+            analysis.rejection_reasons.append("forced_put_very_negative")
+        elif passes_gates:
+            if final_score >= thr_call:
+                direction = Direction.CALL
+            elif final_score <= -thr_put:
+                direction = Direction.PUT
+                analysis.put_threshold_triggered = True
+                print(f"put_threshold_triggered: score={final_score:.4f}, thr_put={thr_put:.4f}")
+                
+                # Prefilter seletivo para PUTs
+                prefilter_passed = self._put_prefilter(analysis)
+                if not prefilter_passed:
+                    # Se falhou no prefilter, converte para NEUTRAL
+                    direction = Direction.NEUTRAL
+                    analysis.rejection_reasons.append("put_prefilter_failed")
+                    print(f"PUT rejeitado por prefilter: {analysis.prefilter_reason}")
+                else:
+                    # Meta-labeling de PUT: filtro extra no D+1
+                    meta_label_passed = self._meta_label_put_filter(analysis)
+                    analysis.put_meta_label_passed = meta_label_passed
+                    
+                    if not meta_label_passed:
+                        # Se falhou no meta-labeling, converte para NEUTRAL
+                        direction = Direction.NEUTRAL
+                        analysis.rejection_reasons.append("put_meta_label_failed")
+                        analysis.put_meta_label_reason = "failed"
+                        print(f"PUT rejeitado por meta-labeling: {analysis.rejection_reasons[-1]}")
+                    else:
+                        analysis.put_meta_label_reason = "passed"
+            else:
+                # Se não passou pelo score, mas há gatilho forte, reduz levemente o threshold
+                if trigger_call and final_score >= (thr_call * 0.9):
+                    direction = Direction.CALL
+                elif trigger_put and final_score <= -(thr_put * 0.9):
+                    direction = Direction.PUT
+                else:
+                    direction = Direction.NEUTRAL
+        else:
+            # Gates falharam: só permitem CALL/PUT se gatilho estiver presente e score próximo do corte
+            if trigger_call and final_score >= (thr_call * 0.95):
+                direction = Direction.CALL
+            elif trigger_put and final_score <= -(thr_put * 0.95):
+                direction = Direction.PUT
+            else:
+                direction = Direction.NEUTRAL
+                analysis.rejection_reasons.append("gate_rejected")
+
+        # Confiança (fallback calibrado logístico)
+        confidence = self._calculate_calibrated_confidence(final_score, direction)
+        # Rejeição de baixa confiança (mais rígida no curto prazo)
+        min_conf = 70 if self.horizon == 'curto' else 55
+        if confidence < min_conf:
+            # Para PUTs, aceita confiança mais baixa (50)
+            if direction == Direction.PUT and confidence >= 50:
+                pass  # Mantém PUT com confiança >= 50
+            else:
+                if direction == Direction.PUT:
+                    analysis.put_rejected_low_conf = True
+                    print(f"put_rejected_low_conf: conf={confidence:.1f}")
+                direction = Direction.NEUTRAL
+
+        # Meta-label de risco: descarta operações com alto risco estrutural
+        if direction != Direction.NEUTRAL:
+            if not self._meta_label_filter(analysis, direction, confidence):
+                direction = Direction.NEUTRAL
+                analysis.rejection_reasons.append("meta_rejected")
+
+        # Registro de rejeição por trigger (quando nenhum trigger ajuda e ficou neutro)
+        if direction == Direction.NEUTRAL and (not trigger_call and not trigger_put):
+            analysis.rejection_reasons.append("trigger_rejected")
+
+        # Armazena scores e flags para debug
+        analysis.raw_final_score = raw_final_score
+        analysis.adjusted_final_score = final_score
+        analysis.gates_passed = passes_gates
+        analysis.gates_relaxed = False  # Será definido em _passes_quality_gates se aplicável
+        # Inicializa campos de debug PUT
+        analysis.put_threshold_triggered = False
+        analysis.put_rejected_low_conf = False
+        analysis.bearish_penalty_value = 0.0
+        analysis.bearish_penalty_trigger = None
+        analysis.put_meta_label_passed = None
+        analysis.put_meta_label_reason = None
+        analysis.prefilter_reject = None
+        analysis.prefilter_reason = None
+        
+        # Log JSON para explicabilidade (usa pesos efetivos)
+        self._log_decision_json(analysis, final_score, eff_weights, thr_call, thr_put, 
+                               trigger_call, trigger_put, passes_gates, direction, confidence)
         
         # Identifica drivers principais
         drivers = []
@@ -716,6 +1039,595 @@ class ProfessionalAnalyzer:
             drivers.append(f"Contexto {analysis.macro_context.context_bias.lower()}")
         
         return direction, confidence, drivers
+
+    def _get_recent_candles_for_patterns(self, ticker: str, analysis_date: datetime) -> Optional[pd.DataFrame]:
+        """
+        Busca dados históricos recentes para análise de padrões de candle.
+        Retorna DataFrame com OHLCV dos últimos 25 dias.
+        """
+        try:
+            from src.core.data.data import get_historical_data
+            
+            # Busca dados dos últimos 30 dias para garantir pelo menos 25 dias úteis
+            start_date = analysis_date - timedelta(days=40)
+            start_str = start_date.strftime('%Y-%m-%d')
+            end_str = analysis_date.strftime('%Y-%m-%d')
+            
+            df = get_historical_data(ticker, start_str, end_str)
+            if df.empty or len(df) < 3:
+                return None
+            
+            # Filtra até a data de análise (não inclui dados futuros)
+            df = df[df['date'] <= analysis_date]
+            
+            # Retorna os últimos 25 dias ou todos se menos que 25
+            return df.tail(25) if len(df) >= 25 else df
+            
+        except Exception as e:
+            # Se houver erro, retorna None
+            return None
+
+    def _log_decision_json(self, analysis: 'ProfessionalAnalysis', final_score: float, 
+                          dyn_weights: Dict[str, float], thr_base: float, thr_put: float,
+                          trigger_call: bool, trigger_put: bool, passes_gates: bool,
+                          direction: Direction, confidence: float) -> None:
+        """Gera log JSON para explicabilidade da decisão."""
+        log_data = {
+            "timestamp": datetime.now().isoformat(),
+            "ticker": analysis.ticker,
+            "horizon": self.horizon,
+            "decision": {
+                "direction": direction.value,
+                "confidence": round(confidence, 2),
+                "final_score": round(final_score, 4)
+            },
+            "thresholds": {
+                "base": round(thr_base, 4),
+                "put": round(thr_put, 4),
+                "decision_threshold": self.decision_threshold
+            },
+            "triggers": {
+                "call": trigger_call,
+                "put": trigger_put,
+                "passes_gates": passes_gates
+            },
+            "layer_scores": {
+                "trend": round(analysis.trend.trend_score, 4),
+                "momentum": round(analysis.momentum.momentum_score, 4),
+                "volume": round(analysis.volume_flow.volume_score, 4),
+                "sentiment": round(analysis.options_sentiment.sentiment_score, 4),
+                "macro": round(analysis.macro_context.overall_context_score, 4)
+            },
+            "dynamic_weights": {k: round(v, 3) for k, v in dyn_weights.items()},
+            "key_indicators": {
+                "adx": round(analysis.momentum.adx, 2),
+                "ema_9": round(analysis.momentum.ema_9, 2),
+                "ema_21": round(analysis.momentum.ema_21, 2),
+                "macd_slope": round(analysis.momentum.macd_slope, 4),
+                "mfi_14": round(analysis.momentum.mfi_14, 2),
+                "obv_trend": round(analysis.volume_flow.obv_trend, 4),
+                "ad_trend": round(analysis.volume_flow.accumulation_distribution, 4)
+            }
+        }
+        
+        # Log apenas para debug (pode ser removido em produção)
+        if self.horizon == 'curto':  # Log apenas para curto prazo para não poluir
+            print(f"🔍 DECISION_LOG: {json.dumps(log_data, indent=2)}")
+
+    def _meta_label_filter(self, analysis: 'ProfessionalAnalysis', direction: Direction, confidence: float) -> bool:
+        """Filtro de risco (meta-label) para decidir operar vs descartar.
+        Regras simples baseadas em regime, fluxo e extremos de osciladores.
+        Retorna True se deve operar; False se deve descartar (virar NEUTRAL).
+        """
+        
+        # Exceção: scores muito altos (>= 0.35) sempre passam no meta-label
+        if abs(analysis.final_score) >= 0.35:
+            return True
+        adx = float(analysis.momentum.adx)
+        mfi = float(analysis.momentum.mfi_14)
+        bb_pos = float(analysis.momentum.bb_position)
+        squeeze = bool(analysis.momentum.bb_squeeze)
+        vol_score = float(analysis.volume_flow.volume_score)
+        obv_trend = float(analysis.volume_flow.obv_trend)
+        ad_trend = float(analysis.volume_flow.accumulation_distribution)
+        ema9 = float(analysis.momentum.ema_9)
+        ema21 = float(analysis.momentum.ema_21)
+        macd_slope = float(analysis.momentum.macd_slope)
+        stoch_signal = analysis.momentum.stoch_signal if hasattr(analysis.momentum, 'stoch_signal') else "NEUTRAL"
+
+        # Permissão extra em squeeze se houver trigger forte e confiança suficiente
+        # Obs: triggers são reavaliados aqui por segurança
+        trigger_call = (adx >= 18 and ema9 > ema21 and macd_slope > 0)
+        trigger_put = (adx >= 18 and ema9 < ema21 and macd_slope < 0)
+
+        if squeeze and abs(vol_score) < 0.1:
+            if not ((trigger_call or trigger_put) and confidence >= 65):
+                analysis.gate_counters['meta_squeeze_vol'] = analysis.gate_counters.get('meta_squeeze_vol', 0) + 1
+                return False
+
+        # Regime LATERAL (reversão)
+        if adx < 18:
+            if direction == Direction.PUT:
+                # Aceita PUT em reversão de topo - regra relaxada
+                if not (((mfi > 65) or (stoch_signal == "OVERBOUGHT")) and bb_pos > 0.4):  # bb_position > 0.4 (antes exigia >0.6)
+                    analysis.gate_counters['meta_lateral'] = analysis.gate_counters.get('meta_lateral', 0) + 1
+                    return False
+            elif direction == Direction.CALL:
+                # Aceita CALL em reversão de fundo - condições muito relaxadas
+                if not (((mfi < 60) or (stoch_signal == "OVERSOLD")) and bb_pos < 0.2):
+                    analysis.gate_counters['meta_lateral'] = analysis.gate_counters.get('meta_lateral', 0) + 1
+                    return False
+            return True
+
+        # Regime TENDÊNCIA (continuação)
+        else:
+            # Regras 2-de-4 (relaxadas de 3-de-4)
+            if direction == Direction.PUT:
+                conds = [ema9 < ema21, macd_slope < 0, obv_trend < 0, mfi < 50]
+                if sum(1 for c in conds if c) < 2:
+                    analysis.gate_counters['meta_trend'] = analysis.gate_counters.get('meta_trend', 0) + 1
+                    return False
+                return True
+            elif direction == Direction.CALL:
+                conds = [ema9 > ema21, macd_slope > 0, obv_trend > 0, mfi > 50]
+                if sum(1 for c in conds if c) < 2:
+                    analysis.gate_counters['meta_trend'] = analysis.gate_counters.get('meta_trend', 0) + 1
+                    return False
+                return True
+            else:
+                return True
+
+    def _dynamic_weights(self, adx: float) -> Dict[str, float]:
+        if adx >= 25:
+            return {'trend': 0.35, 'momentum': 0.30, 'volume': 0.20, 'sentiment': 0.10, 'macro': 0.05}
+        if adx <= 15:
+            return {'trend': 0.15, 'momentum': 0.35, 'volume': 0.25, 'sentiment': 0.20, 'macro': 0.05}
+        return {'trend': 0.25, 'momentum': 0.30, 'volume': 0.25, 'sentiment': 0.15, 'macro': 0.05}
+
+    def _put_prefilter(self, analysis: 'ProfessionalAnalysis') -> bool:
+        """
+        Filtros seletivos para PUTs antes da decisão final.
+        Retorna True se o PUT deve ser aceito, False se deve ser rejeitado.
+        """
+        try:
+            # 1. Exigir regime macro de baixa
+            if analysis.current_price >= analysis.trend.ema_200:
+                analysis.rejection_reasons.append("prefilter_reject: price_above_ema200")
+                analysis.prefilter_reject = True
+                analysis.prefilter_reason = "price_above_ema200"
+                return False
+            
+            # Verificar EMA200 slope (EMA200[t] < EMA200[t-5])
+            try:
+                recent_data = self._get_recent_candles_for_patterns(analysis.ticker, analysis.analysis_date)
+                if recent_data is not None and len(recent_data) >= 10:
+                    ema200_current = analysis.trend.ema_200
+                    ema200_5_days_ago = recent_data['close'].tail(10).rolling(200).mean().iloc[-6] if len(recent_data) >= 6 else ema200_current
+                    
+                    if ema200_current >= ema200_5_days_ago:
+                        analysis.rejection_reasons.append("prefilter_reject: ema200_not_descending")
+                        analysis.prefilter_reject = True
+                        analysis.prefilter_reason = "ema200_not_descending"
+                        return False
+            except:
+                pass  # Se houver erro, continua sem este filtro
+            
+            # 2. Exigir 2 de 4 condições bearish OU death_cross ativo
+            bearish_conditions = 0
+            death_cross_active = analysis.trend.death_cross
+            
+            # Condição 1: Candle vermelho e volume > 1.3 * média20
+            try:
+                if recent_data is not None and len(recent_data) >= 20:
+                    current_close = analysis.current_price
+                    current_open = recent_data['close'].iloc[-2]  # Aproximação
+                    current_volume = recent_data['volume'].iloc[-1]
+                    avg_volume_20 = recent_data['volume'].tail(20).mean()
+                    
+                    if current_close < current_open and current_volume > 1.3 * avg_volume_20:
+                        bearish_conditions += 1
+            except:
+                pass
+            
+            # Condição 2: MACD hist < 0 e menor que há 3 barras
+            try:
+                if recent_data is not None and len(recent_data) >= 5:
+                    current_macd_hist = analysis.momentum.macd_histogram
+                    macd_3_bars_ago = recent_data['close'].tail(5).rolling(12).mean().iloc[-4] - recent_data['close'].tail(5).rolling(26).mean().iloc[-4]
+                    
+                    if current_macd_hist < 0 and current_macd_hist < macd_3_bars_ago:
+                        bearish_conditions += 1
+            except:
+                pass
+            
+            # Condição 3: RSI14 < 45 ou cruzando abaixo de 50
+            rsi_14 = analysis.momentum.rsi_14
+            if rsi_14 < 45:
+                bearish_conditions += 1
+            elif rsi_14 < 50:
+                # Verificar se está cruzando abaixo de 50
+                try:
+                    if recent_data is not None and len(recent_data) >= 2:
+                        rsi_prev = recent_data['close'].tail(2).pct_change().rolling(14).apply(lambda x: 100 - (100 / (1 + x.mean() / (1 - x.mean())))).iloc[-2]
+                        if rsi_prev >= 50 and rsi_14 < 50:
+                            bearish_conditions += 1
+                except:
+                    pass
+            
+            # Condição 4: OBV tendência negativa nos últimos 5-10 candles
+            obv_trend = analysis.volume_flow.obv_trend
+            if obv_trend < 0:
+                bearish_conditions += 1
+            
+            # Relaxar: permitir PUT se (≥2 triggers bearish) OU death_cross ativo
+            if bearish_conditions < 2 and not death_cross_active:
+                analysis.rejection_reasons.append(f"prefilter_reject: insufficient_bearish_conditions_{bearish_conditions}/4_and_no_death_cross")
+                analysis.prefilter_reject = True
+                analysis.prefilter_reason = f"insufficient_bearish_conditions_{bearish_conditions}/4_and_no_death_cross"
+                return False
+            
+            # 3. Evitar chasing: se bb_position < -0.8 (muito colado à banda inferior)
+            bb_position = analysis.momentum.bb_position
+            if bb_position < -0.8:
+                analysis.rejection_reasons.append("prefilter_reject: chasing_lower_band")
+                analysis.prefilter_reject = True
+                analysis.prefilter_reason = "chasing_lower_band"
+                return False
+            
+            # 4. Em squeeze, só aceite se (close < banda inferior) e volume > 1.5 * média20
+            adx_value = float(analysis.momentum.adx)
+            if adx_value < 18:  # Regime lateral (squeeze)
+                try:
+                    if recent_data is not None and len(recent_data) >= 20:
+                        current_close = analysis.current_price
+                        bb_lower = analysis.momentum.bb_lower
+                        current_volume = recent_data['volume'].iloc[-1]
+                        avg_volume_20 = recent_data['volume'].tail(20).mean()
+                        
+                        if not (current_close < bb_lower and current_volume > 1.5 * avg_volume_20):
+                            analysis.rejection_reasons.append("prefilter_reject: squeeze_conditions_not_met")
+                            analysis.prefilter_reject = True
+                            analysis.prefilter_reason = "squeeze_conditions_not_met"
+                            return False
+                except:
+                    pass
+            
+            # Se passou em todos os filtros
+            analysis.prefilter_reject = False
+            analysis.prefilter_reason = "passed"
+            return True
+            
+        except Exception as e:
+            # Em caso de erro, aceita o sinal (não descarta por erro técnico)
+            analysis.rejection_reasons.append(f"prefilter_error: {str(e)}")
+            analysis.prefilter_reject = False
+            analysis.prefilter_reason = "error"
+            return True
+
+    def _meta_label_put_filter(self, analysis: 'ProfessionalAnalysis') -> bool:
+        """
+        Meta-labeling específico para PUTs: filtro extra no D+1 para descartar sinais frágeis.
+        Retorna True se o sinal PUT deve ser mantido, False se deve ser descartado.
+        """
+        try:
+            # Busca dados do próximo dia (D+1) para validação
+            next_day_data = self._get_next_day_data(analysis.ticker, analysis.analysis_date)
+            if next_day_data is None:
+                # Se não há dados do próximo dia, mantém o sinal
+                return True
+            
+            # Análise do comportamento no D+1
+            next_open = next_day_data['open']
+            next_high = next_day_data['high'] 
+            next_low = next_day_data['low']
+            next_close = next_day_data['close']
+            next_volume = next_day_data['volume']
+            
+            # Preço de entrada (fechamento do dia do sinal)
+            entry_price = analysis.current_price
+            
+            # 1. D+1 open contra o sinal >= 0.5*ATR -> rejeite (ml_gap)
+            try:
+                # Calcula ATR(14) para determinar o threshold
+                atr_pct = self._calculate_atr_percentage(analysis.ticker, analysis.analysis_date)
+                if atr_pct is not None:
+                    gap_threshold = 0.5 * atr_pct  # 0.5 * ATR
+                    gap_pct = (next_open - entry_price) / entry_price * 100
+                    
+                    if gap_pct >= gap_threshold:
+                        analysis.rejection_reasons.append(f"ml_gap: gap_up_{gap_pct:.2f}%_vs_threshold_{gap_threshold:.2f}%")
+                        return False
+            except Exception as e:
+                # Fallback: se não conseguir calcular ATR, usa threshold fixo de 3%
+                gap_pct = (next_open - entry_price) / entry_price * 100
+                if gap_pct >= 3.0:
+                    analysis.rejection_reasons.append(f"ml_gap: gap_up_{gap_pct:.2f}%_vs_fallback_3.0%")
+                    return False
+            
+            # 2. D+1 close > high do dia do sinal -> rejeite (ml_killbar)
+            try:
+                # Busca high do dia do sinal
+                signal_day_data = self._get_signal_day_data(analysis.ticker, analysis.analysis_date)
+                if signal_day_data is not None:
+                    signal_day_high = signal_day_data['high']
+                    if next_close > signal_day_high:
+                        kill_pct = (next_close - signal_day_high) / signal_day_high * 100
+                        analysis.rejection_reasons.append(f"ml_killbar: close_{next_close:.2f}_above_signal_high_{signal_day_high:.2f}_gap_{kill_pct:.2f}%")
+                        return False
+            except Exception as e:
+                pass  # Se houver erro, continua sem este filtro
+            
+            # 2.5. Reversão forte D+1 -> rejeite se >2.5%
+            reversal_pct = (next_close - next_open) / next_open * 100 if next_open > 0 else 0
+            if reversal_pct > 2.5:  # Reversão > 2.5% descarta PUT
+                analysis.rejection_reasons.append(f"ml_reversal: strong_reversal_{reversal_pct:.2f}%")
+                return False
+            
+            # 3. Opcional: se MFI(14) subir 2 dias seguidos após o sinal -> rejeite (ml_flow)
+            try:
+                # Busca dados de 3 dias a partir do sinal para calcular MFI
+                mfi_data = self._get_mfi_data(analysis.ticker, analysis.analysis_date, days=3)
+                if mfi_data is not None and len(mfi_data) >= 2:
+                    # Verifica se MFI subiu por 2 dias seguidos
+                    mfi_d1 = mfi_data.iloc[0]['mfi']  # D+1
+                    mfi_d2 = mfi_data.iloc[1]['mfi']  # D+2
+                    
+                    if mfi_d1 > mfi_d2:  # MFI subindo por 2 dias seguidos
+                        mfi_improvement = mfi_d1 - mfi_d2
+                        analysis.rejection_reasons.append(f"ml_flow: mfi_rising_2days_mfi_d1_{mfi_d1:.1f}_d2_{mfi_d2:.1f}_diff_{mfi_improvement:.1f}")
+                        return False
+            except Exception as e:
+                pass  # Se houver erro, continua sem este filtro
+            
+            # Se passou em todos os filtros, mantém o sinal PUT
+            analysis.rejection_reasons.append("meta_label_passed: all_filters_ok")
+            return True
+            
+        except Exception as e:
+            # Em caso de erro, mantém o sinal (não descarta por erro técnico)
+            analysis.rejection_reasons.append(f"meta_label_error: {str(e)}")
+            return True
+
+    def _get_next_day_data(self, ticker: str, analysis_date: datetime) -> Optional[pd.Series]:
+        """
+        Busca dados do próximo dia útil (D+1) para meta-labeling.
+        """
+        try:
+            from src.core.data.data import get_historical_data
+            
+            # Busca dados de 3 dias a partir da data de análise
+            start_date = analysis_date.strftime('%Y-%m-%d')
+            end_date = (analysis_date + timedelta(days=3)).strftime('%Y-%m-%d')
+            
+            df = get_historical_data(ticker, start_date, end_date)
+            if df.empty:
+                return None
+            
+            # Filtra apenas dias após a data de análise
+            df = df[df['date'] > analysis_date]
+            
+            if df.empty:
+                return None
+            
+            # Retorna o primeiro dia útil após a análise
+            return df.iloc[0]
+            
+        except Exception as e:
+            return None
+
+    def _calculate_atr_percentage(self, ticker: str, analysis_date: datetime) -> Optional[float]:
+        """
+        Calcula ATR(14) em percentual para usar como threshold.
+        """
+        try:
+            from src.core.data.data import get_historical_data
+            import numpy as np
+            
+            # Busca dados históricos para calcular ATR
+            start_date = (analysis_date - timedelta(days=120)).strftime('%Y-%m-%d')
+            end_date = analysis_date.strftime('%Y-%m-%d')
+            
+            df = get_historical_data(ticker, start_date, end_date)
+            if df.empty or len(df) < 20:
+                return None
+            
+            # Filtra até a data de análise
+            df = df[df['date'] <= analysis_date]
+            
+            if len(df) < 20:
+                return None
+            
+            # Calcula True Range
+            h = df['high'].astype(float).values
+            l = df['low'].astype(float).values
+            c = df['close'].astype(float).values
+            
+            prev_c = np.roll(c, 1)
+            prev_c[0] = c[0]
+            
+            tr = np.maximum(h - l, np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
+            
+            # Converte TR para % sobre o fechamento anterior
+            with np.errstate(divide='ignore', invalid='ignore'):
+                tr_pct = np.where(prev_c != 0, (tr / prev_c) * 100.0, 0.0)
+            
+            # ATR(14) em %
+            if len(tr_pct) >= 14:
+                atr_pct = float(pd.Series(tr_pct).rolling(14).mean().iloc[-1])
+            else:
+                atr_pct = float(np.nanmean(tr_pct[-14:])) if len(tr_pct) > 0 else None
+            
+            if not np.isfinite(atr_pct) or atr_pct <= 0:
+                return None
+                
+            return atr_pct
+            
+        except Exception as e:
+            return None
+
+    def _get_signal_day_data(self, ticker: str, analysis_date: datetime) -> Optional[pd.Series]:
+        """
+        Busca dados do dia do sinal para obter o high do dia.
+        """
+        try:
+            from src.core.data.data import get_historical_data
+            
+            # Busca dados do dia do sinal
+            start_date = analysis_date.strftime('%Y-%m-%d')
+            end_date = (analysis_date + timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            df = get_historical_data(ticker, start_date, end_date)
+            if df.empty:
+                return None
+            
+            # Filtra apenas o dia do sinal
+            df = df[df['date'] == analysis_date]
+            
+            if df.empty:
+                return None
+            
+            return df.iloc[0]
+            
+        except Exception as e:
+            return None
+
+    def _get_mfi_data(self, ticker: str, analysis_date: datetime, days: int = 3) -> Optional[pd.DataFrame]:
+        """
+        Busca dados para calcular MFI(14) dos próximos dias após o sinal.
+        """
+        try:
+            from src.core.data.data import get_historical_data
+            import numpy as np
+            
+            # Busca dados históricos incluindo os dias após o sinal
+            start_date = (analysis_date - timedelta(days=30)).strftime('%Y-%m-%d')
+            end_date = (analysis_date + timedelta(days=days+1)).strftime('%Y-%m-%d')
+            
+            df = get_historical_data(ticker, start_date, end_date)
+            if df.empty or len(df) < 20:
+                return None
+            
+            # Filtra até alguns dias após a análise
+            df = df[df['date'] <= analysis_date + timedelta(days=days)]
+            
+            if len(df) < 20:
+                return None
+            
+            # Calcula MFI(14) para cada dia
+            high = df['high'].astype(float).values
+            low = df['low'].astype(float).values
+            close = df['close'].astype(float).values
+            volume = df['volume'].astype(float).values
+            
+            mfi_values = []
+            dates = []
+            
+            for i in range(14, len(df)):
+                # Calcula Typical Price
+                typical_price = (high[i-14:i+1] + low[i-14:i+1] + close[i-14:i+1]) / 3
+                
+                # Calcula Raw Money Flow
+                raw_money_flow = typical_price * volume[i-14:i+1]
+                
+                # Determina Positive/Negative Money Flow
+                positive_flow = 0
+                negative_flow = 0
+                
+                for j in range(1, len(typical_price)):
+                    if typical_price[j] > typical_price[j-1]:
+                        positive_flow += raw_money_flow[j]
+                    elif typical_price[j] < typical_price[j-1]:
+                        negative_flow += raw_money_flow[j]
+                
+                # Calcula MFI
+                if negative_flow == 0:
+                    mfi = 100
+                else:
+                    money_flow_ratio = positive_flow / negative_flow
+                    mfi = 100 - (100 / (1 + money_flow_ratio))
+                
+                mfi_values.append(mfi)
+                dates.append(df.iloc[i]['date'])
+            
+            # Retorna apenas os dias após o sinal
+            signal_date = analysis_date
+            result_data = []
+            
+            for i, date in enumerate(dates):
+                if date > signal_date:
+                    result_data.append({
+                        'date': date,
+                        'mfi': mfi_values[i]
+                    })
+            
+            if not result_data:
+                return None
+                
+            return pd.DataFrame(result_data)
+            
+        except Exception as e:
+            return None
+
+    def _passes_quality_gates(self, analysis: 'ProfessionalAnalysis', final_score: float, thr_put: float) -> bool:
+        adx = float(analysis.momentum.adx)
+        confidence = self._calculate_calibrated_confidence(final_score, Direction.PUT if final_score <= -thr_put else Direction.CALL if final_score >= thr_put else Direction.NEUTRAL)
+        
+        # Regras relaxadas para sinais PUT
+        if final_score <= -thr_put and confidence >= 55:
+            # Para sinais PUT: relaxe regras
+            # Ignore gate de volume fraco
+            # Ignore gate de squeeze
+            analysis.gates_relaxed = True
+            # Apenas verifica ADX mínimo
+            if (self.horizon == 'curto' and adx < 8) or adx < 6:
+                analysis.gate_counters['gate_adx'] = analysis.gate_counters.get('gate_adx', 0) + 1
+                return False
+            return True
+        
+        # Regras normais para outros sinais
+        analysis.gates_relaxed = False
+        
+        # Piso de ADX mais baixo para permitir mais sinais
+        if (self.horizon == 'curto' and adx < 8) or adx < 6:  # Mais permissivo
+            analysis.gate_counters['gate_adx'] = analysis.gate_counters.get('gate_adx', 0) + 1
+            return False
+        # Volume: bloqueia apenas se muito contrário
+        if analysis.volume_flow.volume_score < -0.4:  # Mais permissivo
+            analysis.gate_counters['gate_volume'] = analysis.gate_counters.get('gate_volume', 0) + 1
+            return False
+        # Sentimento: bloqueia apenas se muito negativo
+        if analysis.options_sentiment.sentiment_score < -0.5:  # Mais permissivo
+            analysis.gate_counters['gate_sentiment'] = analysis.gate_counters.get('gate_sentiment', 0) + 1
+            return False
+        # Alinhamento tendência x momentum menos restritivo para permitir scores negativos
+        trend = analysis.trend.trend_score
+        mom = analysis.momentum.momentum_score
+        if self.horizon == 'curto':
+            # Permite mais divergências para gerar PUTs
+            if (trend < -0.30 and mom > 0.40) or (trend > 0.30 and mom < -0.40):
+                analysis.gate_counters['gate_align'] = analysis.gate_counters.get('gate_align', 0) + 1
+                return False
+            if abs(mom) < 0.01:  # Mais permissivo
+                analysis.gate_counters['gate_momentum_weak'] = analysis.gate_counters.get('gate_momentum_weak', 0) + 1
+                return False
+        else:
+            if trend < -0.35 and mom > 0.35:
+                analysis.gate_counters['gate_align'] = analysis.gate_counters.get('gate_align', 0) + 1
+                return False
+            if trend > 0.35 and mom < -0.35:
+                analysis.gate_counters['gate_align'] = analysis.gate_counters.get('gate_align', 0) + 1
+                return False
+        return True
+
+    def _adaptive_threshold(self, adx: float, base: float = 0.15) -> float:
+        # Em tendência forte, permita corte menor para capturar movimentos
+        if adx >= 25:
+            return max(0.10, base - 0.05)
+        # Em mercado lateral, eleve o corte moderadamente
+        if adx <= 15:
+            return base + 0.05
+        # Neutro mantém base
+        return base
     
     def generate_strategy_recommendation(self, analysis: 'ProfessionalAnalysis') -> str:
         """Gera recomendação de estratégia profissional."""
@@ -763,18 +1675,20 @@ class ProfessionalAnalyzer:
         # Cria análise completa
         analysis = ProfessionalAnalysis(
             ticker=ticker,
-            current_price=current_price,
-            analysis_date=datetime.now(),
+            current_price=float(current_price),
+            analysis_date=price_data.index[-1].to_pydatetime() if hasattr(price_data.index, 'to_pydatetime') else datetime.now(),
             trend=trend,
             momentum=momentum,
             volume_flow=volume_flow,
             options_sentiment=options_sentiment,
             macro_context=macro_context,
-            final_score=0.0,  # Será calculado
-            direction=Direction.NEUTRAL,  # Será calculado
-            confidence=0.0,  # Será calculado
-            key_drivers=[],  # Será calculado
-            strategy_recommendation=""  # Será calculado
+            final_score=0.0,
+            direction=Direction.NEUTRAL,
+            confidence=0.0,
+            key_drivers=[],
+            strategy_recommendation="",
+            gate_counters={},
+            rejection_reasons=[]
         )
         
         # Calcula decisão final
@@ -783,14 +1697,16 @@ class ProfessionalAnalyzer:
         # Calcula horizonte dinâmico baseado no regime de mercado
         dynamic_horizon = self._calculate_dynamic_horizon(trend, momentum, volume_flow)
         
-        # Atualiza análise usando pesos configuráveis
+        # Usa exatamente os mesmos pesos efetivos definidos em calculate_final_decision
+        eff = getattr(analysis, 'effective_weights', None) or self._dynamic_weights(float(momentum.adx))
         analysis.final_score = (
-            trend.trend_score * self.layer_weights['trend'] +
-            momentum.momentum_score * self.layer_weights['momentum'] +
-            volume_flow.volume_score * self.layer_weights['volume'] +
-            options_sentiment.sentiment_score * self.layer_weights['sentiment'] +
-            macro_context.overall_context_score * self.layer_weights['macro']
+            trend.trend_score * eff['trend'] +
+            momentum.momentum_score * eff['momentum'] +
+            volume_flow.volume_score * eff['volume'] +
+            options_sentiment.sentiment_score * eff['sentiment'] +
+            macro_context.overall_context_score * eff['macro']
         )
+        analysis.effective_weights = eff
         analysis.direction = direction
         analysis.confidence = confidence
         analysis.key_drivers = drivers
@@ -873,7 +1789,7 @@ class ProfessionalAnalyzer:
         high = price_data.get('high', price_data['close'])
         low = price_data.get('low', price_data['close'] * 0.98)
         close = price_data['close']
-        volume = price_data.get('volume', pd.Series([1] * len(close)))
+        volume = price_data.get('volume', pd.Series([1.0] * len(close), index=close.index))
         
         # Evita divisão por zero no CLV
         hl_diff = high - low

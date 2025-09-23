@@ -8,10 +8,15 @@ import yfinance as yf
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+import os
+from functools import lru_cache
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+CACHE_DIR = os.path.join(os.getcwd(), "data_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 def _convert_ticker_to_yfinance(ticker: str) -> str:
@@ -130,12 +135,64 @@ def get_historical_data(ticker: str, start_date: str, end_date: str) -> pd.DataF
         return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
 
 
+def _cache_path(ticker: str, start_date: str = None, end_date: str = None, days: int = None) -> str:
+    ticker = ticker.upper().strip()
+    if days is not None:
+        return os.path.join(CACHE_DIR, f"{ticker}_last_{days}d.parquet")
+    return os.path.join(CACHE_DIR, f"{ticker}_{start_date}_{end_date}.parquet")
+
+
+def _write_parquet(df: pd.DataFrame, path: str) -> None:
+    try:
+        if not df.empty:
+            df.to_parquet(path, index=False)
+    except Exception as e:
+        logger.warning(f"⚠️ Falha ao salvar cache em {path}: {e}")
+
+
+def _read_parquet(path: str) -> Optional[pd.DataFrame]:
+    try:
+        if os.path.exists(path):
+            df = pd.read_parquet(path)
+            return df
+    except Exception as e:
+        logger.warning(f"⚠️ Falha ao ler cache em {path}: {e}")
+    return None
+
+
+# Wrappers com cache persistente + LRU em memória
+@lru_cache(maxsize=256)
+def get_price_history_cached(ticker: str, history_days: int) -> pd.DataFrame:
+    path = _cache_path(ticker, days=history_days)
+    cached = _read_parquet(path)
+    if cached is not None and not cached.empty:
+        logger.info(f"🗂️ Cache hit (price_history): {ticker} last {history_days}d")
+        return cached
+    df = get_price_history(ticker, history_days)
+    _write_parquet(df, path)
+    return df
+
+
+@lru_cache(maxsize=512)
+def get_historical_data_cached(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    path = _cache_path(ticker, start_date, end_date)
+    cached = _read_parquet(path)
+    if cached is not None and not cached.empty:
+        logger.info(f"🗂️ Cache hit (period): {ticker} {start_date}..{end_date}")
+        return cached
+    df = get_historical_data(ticker, start_date, end_date)
+    _write_parquet(df, path)
+    return df
+
+
 # Instância global para compatibilidade
 oplab_data_provider = None
 
 # Exports
 __all__ = [
     'get_price_history',
-    'get_historical_data', 
+    'get_historical_data',
+    'get_price_history_cached',
+    'get_historical_data_cached',
     'oplab_data_provider'
 ]

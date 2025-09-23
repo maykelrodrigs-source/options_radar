@@ -10,18 +10,28 @@ if PROJECT_ROOT not in sys.path:
 
 from src.core.data.oplab_client import OpLabClient
 from src.features.income.synthetic_dividends import find_synthetic_dividend_options
-from src.app.pages.professional_radar import render_professional_radar_page
+from src.app._pages.fundamentals import render_fundamentals_page
+from src.app._pages.professional_radar import render_professional_radar_page
+from src.app._pages.iron_condor_scanner import render_iron_condor_scanner_page
 from src.features.income.income_opportunities import render_income_opportunities_page
-from src.app.pages.run_backtest import render_backtest_page
+from src.app._pages.run_backtest import render_backtest_page
+from src.app._pages.covered_strangle import render_covered_strangle_page
 
+
+from src.config.version import VERSION
 
 st.set_page_config(page_title="Options Radar", layout="wide")
 st.title("🎯 Options Radar")
+with st.sidebar:
+    st.markdown(f"<div style='font-size:11px;color:#888;text-align:right;'>v{VERSION}</div>", unsafe_allow_html=True)
 
 # Cria abas
-tab1, tab2, tab3, tab4 = st.tabs(["💰 Dividendos Sintéticos", "🎯 Radar Profissional", "💸 Oportunidades de Renda", "🔬 Backtest"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Fundamentos", "💰 Dividendos Sintéticos", "🦅 Iron Condor", "💸 Oportunidades de Renda", "🧲 Covered Strangle", "🎯 Radar Profissional", "🔬 Backtest"])
 
 with tab1:
+    render_fundamentals_page()
+
+with tab2:
     st.markdown("### Estratégia de Dividendos Sintéticos")
     st.markdown("Busca opções para estratégia de dividendos sintéticos")
 
@@ -53,7 +63,7 @@ with tab1:
             with col4:
                 max_exercise_prob = st.number_input("Prob. máx. exercício (%)", min_value=1.0, max_value=50.0, value=20.0, step=1.0, help="Probabilidade máxima de exercício da opção", key="dividends_exercise_prob")
 
-            submitted = st.form_submit_button("Buscar sugestões")
+            submitted = st.form_submit_button("🔍 Buscar")
 
         params = {
             "ticker": ticker,
@@ -74,6 +84,11 @@ with tab1:
             
             # Configuração de colunas com tooltips
             column_config = {
+                "Score": st.column_config.NumberColumn(
+                    "Score",
+                    help="Score de 0-100 balanceando retorno vs risco. Maior = melhor oportunidade",
+                    format="%.1f"
+                ),
                 "Prob. Exercício (%)": st.column_config.NumberColumn(
                     "Prob. Exercício (%)",
                     help="Probabilidade de exercício: <5% baixo risco, 5-15% moderado, >15% alto risco",
@@ -131,11 +146,17 @@ with tab1:
         except Exception as e:
             st.error(f"Erro: {e}")
 
-with tab2:
-    render_professional_radar_page()
-
 with tab3:
-    render_income_opportunities_page()
+    render_iron_condor_scanner_page()
 
 with tab4:
+    render_income_opportunities_page()
+
+with tab5:
+    render_covered_strangle_page()
+
+with tab6:
+    render_professional_radar_page()
+
+with tab7:
     render_backtest_page()

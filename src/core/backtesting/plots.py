@@ -18,18 +18,18 @@ class BacktestPlotter:
     """Classe para gerar visualizações dos resultados de backtest."""
     
     def __init__(self):
-        # Cores padrão para os sinais
+        # Cores padrão para os sinais (usa strings para evitar problemas de Enum recarregado)
         self.signal_colors = {
-            Direction.CALL: '#00C851',  # Verde
-            Direction.PUT: '#FF4444',   # Vermelho
-            Direction.NEUTRAL: '#9E9E9E'  # Cinza
+            'CALL': '#00C851',   # Verde
+            'PUT': '#FF4444',    # Vermelho
+            'NEUTRAL': '#9E9E9E' # Cinza
         }
         
         # Símbolos para os marcadores
         self.signal_symbols = {
-            Direction.CALL: 'triangle-up',
-            Direction.PUT: 'triangle-down',
-            Direction.NEUTRAL: 'circle'
+            'CALL': 'triangle-up',
+            'PUT': 'triangle-down',
+            'NEUTRAL': 'circle'
         }
     
     def plot_price_with_signals(
@@ -106,9 +106,9 @@ class BacktestPlotter:
                 mode='markers',
                 name=f'{signal_type.value} ({len(signals_of_type)})',
                 marker=dict(
-                    color=self.signal_colors[signal_type],
+                    color=self.signal_colors[signal_type.value],
                     size=sizes,
-                    symbol=self.signal_symbols[signal_type],
+                    symbol=self.signal_symbols[signal_type.value],
                     opacity=opacity,
                     line=dict(width=1, color='white')
                 ),
@@ -334,9 +334,9 @@ class BacktestPlotter:
                 mode='markers',
                 name=signal_type.value,
                 marker=dict(
-                    color=self.signal_colors[signal_type],
+                    color=self.signal_colors[signal_type.value],
                     size=8,
-                    symbol=self.signal_symbols[signal_type],
+                    symbol=self.signal_symbols[signal_type.value],
                     opacity=0.7,
                     line=dict(width=1, color='white')
                 ),
@@ -414,7 +414,7 @@ class BacktestPlotter:
         signal_results = [100 if s.is_correct else 0 for s in result.signals]
         signal_types = [s.signal.value for s in result.signals]
         
-        colors = [self.signal_colors[s.signal] for s in result.signals]
+        colors = [self.signal_colors[getattr(s.signal, 'value', str(s.signal))] for s in result.signals]
         
         fig.add_trace(go.Scatter(
             x=signal_dates,
@@ -497,7 +497,7 @@ class BacktestPlotter:
         dates = [s.date for s in result.signals]
         results = [100 if s.is_correct else 0 for s in result.signals]
         types = [s.signal.value for s in result.signals]
-        colors = [self.signal_colors[s.signal] for s in result.signals]
+        colors = [self.signal_colors[getattr(s.signal, 'value', str(s.signal))] for s in result.signals]
         
         fig.add_trace(go.Scatter(
             x=dates,

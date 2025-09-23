@@ -18,7 +18,7 @@ fi
 # Verifica se as variáveis essenciais estão configuradas
 if [ -z "$OPLAB_API_BASE_URL" ] || [ -z "$OPLAB_API_KEY" ]; then
     echo "❌ Variáveis OPLAB_API_BASE_URL ou OPLAB_API_KEY não configuradas!"
-    echo "💡 Verifique o arquivo env_config.sh"
+    echo "💡 Verifique o arquivo src/config/env_config.sh"
     exit 1
 fi
 
