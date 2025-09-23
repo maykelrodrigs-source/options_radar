@@ -97,15 +97,14 @@ def calculate_pvp_price(vpa: float, pvp_target: float) -> float:
 def calculate_bazin_price(dps: float, crescimento: float, taxa_desconto: float = 6.0) -> float:
     """
     Calcula preço usando fórmula de Bazin.
-    Fórmula: DPS × (1 + crescimento) / (taxa_desconto - crescimento)
+    Fórmula: DPS / taxa_desconto
     """
-    if dps <= 0 or taxa_desconto <= crescimento:
+    if dps <= 0 or taxa_desconto <= 0:
         return 0.0
     
-    crescimento_decimal = crescimento / 100
     taxa_decimal = taxa_desconto / 100
     
-    return (dps * (1 + crescimento_decimal)) / (taxa_decimal - crescimento_decimal)
+    return dps / taxa_decimal
 
 
 def calculate_peg_ratio(pl: float, crescimento: float) -> float:
