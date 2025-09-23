@@ -5,6 +5,8 @@ Página de Análise de Fundamentos - Valuation de Ações Brasileiras
 import streamlit as st
 import pandas as pd
 import json
+import plotly.graph_objects as go
+import plotly.express as px
 from typing import List
 
 from src.features.fundamentals.valuation import (
@@ -272,11 +274,41 @@ def render_valuation_results(result: ValuationResult):
         )
     
     with col3:
-        status = "🟢 Desconto" if result.desconto else "🔴 Caro"
-        st.metric("Status", status)
+        # Bandeira visual de status
+        if result.desconto:
+            status_icon = "🟢"
+            status_text = "Barato"
+        elif result.caro:
+            status_icon = "🔴"
+            status_text = "Caro"
+        else:
+            status_icon = "🟡"
+            status_text = "Justo"
+        
+        st.metric(
+            "Status",
+            f"{status_icon} {status_text}",
+            delta=f"{result.margem_seguranca['media']:.1f}%"
+        )
     
     with col4:
-        st.metric("PEG Ratio", f"{result.peg_ratio:.2f}")
+        st.metric(
+            "PEG Ratio",
+            f"{result.peg_ratio:.2f}",
+            delta="Crescimento" if result.peg_ratio < 2 else "Sobrevavaliado"
+        )
+    
+    # Gráfico de barras: Preço Atual vs Preços Justos
+    render_price_comparison_chart(result)
+    
+    # Heatmap de valuation
+    render_valuation_heatmap(result)
+    
+    # Métricas adicionais
+    render_additional_metrics(result)
+    
+    # Ranking setorial
+    render_sector_ranking(result)
     
     # Tabela de preços justos
     st.subheader("💰 Preços Justos por Método")
@@ -376,3 +408,203 @@ def render_summary_table(results: List[ValuationResult]):
     }
     
     st.dataframe(df_summary, use_container_width=True, hide_index=True, column_config=column_config)
+
+
+def render_price_comparison_chart(result: ValuationResult):
+    """Renderiza gráfico de barras comparando Preço Atual vs Preços Justos."""
+    
+    st.subheader("📊 Comparação Visual: Preço Atual vs Preços Justos")
+    
+    # Dados para o gráfico
+    methods = [
+        "Preço Atual",
+        "Graham", 
+        "Dividend Yield",
+        "P/L 10",
+        "P/L 12",
+        "P/L 15", 
+        "P/VPA 1.0",
+        "P/VPA 1.5",
+        "Bazin",
+        "Média"
+    ]
+    
+    prices = [
+        result.preco_atual,
+        result.preco_graham,
+        result.preco_dividendos,
+        result.preco_pl10,
+        result.preco_pl12,
+        result.preco_pl15,
+        result.preco_pvp1,
+        result.preco_pvp1_5,
+        result.preco_bazin,
+        result.media_precos_justos
+    ]
+    
+    # Cores: azul para preço atual, verde para preços justos
+    colors = ['#1f77b4'] + ['#2ca02c'] * 8 + ['#ff7f0e']  # Laranja para média
+    
+    # Criar gráfico
+    fig = go.Figure(data=[
+        go.Bar(
+            x=methods,
+            y=prices,
+            marker_color=colors,
+            text=[f"R$ {p:.2f}" for p in prices],
+            textposition='auto',
+        )
+    ])
+    
+    fig.update_layout(
+        title=f"Comparação de Preços - {result.ticker}",
+        xaxis_title="Métodos de Valuation",
+        yaxis_title="Preço (R$)",
+        showlegend=False,
+        height=500
+    )
+    
+    # Adicionar linha horizontal para preço atual
+    fig.add_hline(
+        y=result.preco_atual, 
+        line_dash="dash", 
+        line_color="red",
+        annotation_text=f"Preço Atual: R$ {result.preco_atual:.2f}"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_valuation_heatmap(result: ValuationResult):
+    """Renderiza heatmap de barato → justo → caro para cada método."""
+    
+    st.subheader("🔥 Heatmap de Valuation por Método")
+    
+    # Dados para o heatmap
+    methods = [
+        "Graham", "Dividend Yield", "P/L 10", "P/L 12", "P/L 15",
+        "P/VPA 1.0", "P/VPA 1.5", "Bazin"
+    ]
+    
+    prices = [
+        result.preco_graham, result.preco_dividendos, result.preco_pl10,
+        result.preco_pl12, result.preco_pl15, result.preco_pvp1,
+        result.preco_pvp1_5, result.preco_bazin
+    ]
+    
+    # Calcular status para cada método
+    status_data = []
+    for method, price in zip(methods, prices):
+        if price > 0:
+            if result.preco_atual < price * 0.9:  # 10% de desconto
+                status = "🟢 Barato"
+                color = "green"
+            elif result.preco_atual > price * 1.1:  # 10% de sobrepreço
+                status = "🔴 Caro"
+                color = "red"
+            else:
+                status = "🟡 Justo"
+                color = "orange"
+        else:
+            status = "⚪ N/A"
+            color = "gray"
+        
+        status_data.append({
+            "Método": method,
+            "Preço Justo": f"R$ {price:.2f}",
+            "Status": status,
+            "Margem": f"{((price - result.preco_atual) / result.preco_atual * 100):.1f}%" if price > 0 else "N/A"
+        })
+    
+    df_heatmap = pd.DataFrame(status_data)
+    
+    # Configuração de colunas com cores
+    column_config = {
+        "Status": st.column_config.TextColumn(
+            "Status",
+            help="Classificação visual do valuation"
+        ),
+        "Margem": st.column_config.TextColumn(
+            "Margem",
+            help="Margem de segurança/premium"
+        )
+    }
+    
+    st.dataframe(df_heatmap, use_container_width=True, hide_index=True, column_config=column_config)
+
+
+def render_additional_metrics(result: ValuationResult):
+    """Renderiza métricas adicionais: ROE, ROIC, Dívida/EBITDA, Payout."""
+    
+    st.subheader("📈 Métricas Adicionais")
+    
+    # Métricas básicas (já disponíveis)
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "ROE",
+            f"{result.roe:.2f}%",
+            help="Retorno sobre Patrimônio Líquido"
+        )
+    
+    with col2:
+        st.metric(
+            "Payout",
+            f"{result.payout:.2f}%",
+            help="Percentual de lucros distribuídos como dividendos"
+        )
+    
+    with col3:
+        st.metric(
+            "P/L Atual",
+            f"{result.pl:.2f}",
+            help="Preço sobre Lucro por Ação"
+        )
+    
+    with col4:
+        st.metric(
+            "P/VP Atual",
+            f"{result.pvp:.2f}",
+            help="Preço sobre Valor Patrimonial"
+        )
+    
+    # Nota sobre métricas não disponíveis
+    st.info("💡 **Nota**: ROIC e Dívida/EBITDA requerem dados adicionais do StatusInvest. Em desenvolvimento.")
+
+
+def render_sector_ranking(result: ValuationResult):
+    """Renderiza ranking setorial (simulado por enquanto)."""
+    
+    st.subheader("🏆 Ranking Setorial")
+    
+    # Simulação de ranking setorial (em produção, viria de dados reais)
+    st.info("📊 **Ranking Setorial** (dados simulados para demonstração)")
+    
+    ranking_data = {
+        "Métrica": ["P/L", "P/VP", "Dividend Yield", "ROE"],
+        "Posição": ["15º/50", "8º/50", "25º/50", "12º/50"],
+        "Percentil": ["30%", "84%", "50%", "76%"],
+        "Status": ["🟡 Médio", "🟢 Bom", "🟡 Médio", "🟢 Bom"]
+    }
+    
+    df_ranking = pd.DataFrame(ranking_data)
+    
+    column_config = {
+        "Posição": st.column_config.TextColumn(
+            "Posição",
+            help="Posição em relação aos pares do setor"
+        ),
+        "Percentil": st.column_config.TextColumn(
+            "Percentil",
+            help="Percentil de performance"
+        ),
+        "Status": st.column_config.TextColumn(
+            "Status",
+            help="Classificação relativa"
+        )
+    }
+    
+    st.dataframe(df_ranking, use_container_width=True, hide_index=True, column_config=column_config)
+    
+    st.caption("💡 *Dados reais de ranking setorial serão implementados em versão futura*")
