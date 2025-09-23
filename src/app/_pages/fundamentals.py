@@ -95,29 +95,6 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
                 st.session_state.fundamental_data = None
                 st.warning(f"⚠️ Erro ao buscar dados para {ticker}: {e}")
         
-        # Botão para atualizar dados manualmente
-        col_refresh1, col_refresh2 = st.columns([1, 1])
-        with col_refresh1:
-            if st.button("🔄 Atualizar Dados", help="Força a atualização dos dados do ticker"):
-                try:
-                    client = OpLabClient()
-                    fundamental_data = get_real_fundamental_data(ticker, client)
-                    st.session_state.fundamental_data = fundamental_data
-                    st.session_state.last_ticker = ticker  # Atualizar para evitar recarregamento
-                    st.success(f"✅ Dados atualizados para {ticker}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Erro ao atualizar dados: {e}")
-        
-        with col_refresh2:
-            if st.button("🗑️ Limpar Cache", help="Limpa os dados em cache"):
-                if 'fundamental_data' in st.session_state:
-                    del st.session_state.fundamental_data
-                if 'last_ticker' in st.session_state:
-                    del st.session_state.last_ticker
-                st.success("✅ Cache limpo")
-                st.rerun()
-        
         # Dados fundamentais
         with st.form("fundamental_data_form"):
             st.markdown("**Dados Fundamentais:**")
