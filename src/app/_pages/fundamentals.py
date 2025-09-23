@@ -100,7 +100,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             if st.session_state.fundamental_data:
                 data = st.session_state.fundamental_data
                 preco_default = data.preco_atual if data.preco_atual > 0 else 22.16
-                lpa_default = data.lpa if data.lpa > 0 else 2.85
+                lpa_default = data.lpa if data.lpa != 0 else 2.85  # Permitir valores negativos
                 vpa_default = data.vpa if data.vpa > 0 else 18.50
                 dps_default = data.dps if data.dps > 0 else 1.20
                 crescimento_default = data.crescimento_esperado if data.crescimento_esperado > 0 else 8.0
@@ -172,7 +172,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             
             # Atualizar com dados do formulário se fornecidos
             fundamental_data.preco_atual = preco_atual
-            if lpa > 0:
+            if lpa != 0:  # Permitir valores negativos
                 fundamental_data.lpa = lpa
             if vpa > 0:
                 fundamental_data.vpa = vpa
@@ -182,15 +182,15 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
                 fundamental_data.crescimento_esperado = crescimento_esperado
             
             # Recalcular métricas
-            if fundamental_data.lpa > 0:
+            if fundamental_data.lpa != 0:  # Permitir valores negativos
                 fundamental_data.pl = fundamental_data.preco_atual / fundamental_data.lpa
             if fundamental_data.vpa > 0:
                 fundamental_data.pvp = fundamental_data.preco_atual / fundamental_data.vpa
             if fundamental_data.dps > 0:
                 fundamental_data.dividend_yield = (fundamental_data.dps / fundamental_data.preco_atual) * 100
-            if fundamental_data.lpa > 0 and fundamental_data.dps > 0:
+            if fundamental_data.lpa != 0 and fundamental_data.dps > 0:  # Permitir LPA negativo
                 fundamental_data.payout = (fundamental_data.dps / fundamental_data.lpa) * 100
-            if fundamental_data.vpa > 0 and fundamental_data.lpa > 0:
+            if fundamental_data.vpa > 0 and fundamental_data.lpa != 0:  # Permitir LPA negativo
                 fundamental_data.roe = (fundamental_data.lpa / fundamental_data.vpa) * 100
             if fundamental_data.crescimento_esperado > 0:
                 fundamental_data.peg_ratio = fundamental_data.pl / fundamental_data.crescimento_esperado
