@@ -530,7 +530,7 @@ def _extract_fundamentals_correctly(soup):
                         value = float(value_match.group())
                         
                         # Mapear baseado no contexto
-                        if 'PEG Ratio' in context and 'LPA' in context:
+                        if 'lucro líquido' in context.lower() and 'nº de ações' in context.lower():
                             lpa = value
                         elif 'valor patrimonial' in context.lower() and 'patrimônio líquido' in context.lower():
                             vpa = value
