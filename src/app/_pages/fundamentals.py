@@ -24,35 +24,32 @@ def render_fundamentals_page():
     st.markdown("### 📊 Análise de Fundamentos")
     st.markdown("Cálculo de preço justo usando múltiplos métodos de valuation com **dados reais** via OpLab API")
     
-    # Configurações
-    with st.expander("⚙️ Configurações", expanded=True):
-        col1, col2, col3 = st.columns(3)
+    # Configurações simplificadas
+    with st.expander("⚙️ Configurações", expanded=False):
+        col1, col2 = st.columns(2)
         
         with col1:
             yield_min = st.number_input(
-                "Yield mínimo desejado (%)",
+                "Yield mínimo (%)",
                 min_value=1.0,
                 max_value=20.0,
                 value=6.0,
                 step=0.5,
-                help="Dividend yield mínimo para cálculo de preço teto"
+                help="Dividend yield mínimo"
             )
             
         with col2:
             taxa_desconto = st.number_input(
-                "Taxa de desconto Bazin (%)",
+                "Taxa Bazin (%)",
                 min_value=1.0,
                 max_value=20.0,
                 value=6.0,
                 step=0.5,
-                help="Taxa de desconto para fórmula de Bazin"
+                help="Taxa de desconto para Bazin"
             )
-            
-        with col3:
-            st.markdown("**P/Ls Alvo:**")
-            pl10 = st.number_input("P/L 10", value=10, min_value=1, max_value=50, key="pl10")
-            pl12 = st.number_input("P/L 12", value=12, min_value=1, max_value=50, key="pl12")
-            pl15 = st.number_input("P/L 15", value=15, min_value=1, max_value=50, key="pl15")
+    
+    # P/Ls fixos (não configuráveis)
+    pl_targets = [10, 12, 15]
     
     # Modo de análise
     modo = st.radio(
@@ -62,9 +59,9 @@ def render_fundamentals_page():
     )
     
     if modo == "Análise Individual":
-        render_individual_analysis(yield_min, taxa_desconto, [pl10, pl12, pl15])
+        render_individual_analysis(yield_min, taxa_desconto, pl_targets)
     else:
-        render_multiple_analysis(yield_min, taxa_desconto, [pl10, pl12, pl15])
+        render_multiple_analysis(yield_min, taxa_desconto, pl_targets)
 
 
 def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_targets: List[float]):
@@ -323,28 +320,27 @@ def render_valuation_results(result: ValuationResult):
     df_precos = pd.DataFrame(precos_data)
     st.dataframe(df_precos, use_container_width=True, hide_index=True)
     
-    # JSON de saída
-    st.subheader("📄 JSON de Saída")
-    
-    json_output = {
-        "ticker": result.ticker,
-        "preco_atual": result.preco_atual,
-        "preco_graham": result.preco_graham,
-        "preco_dividendos": result.preco_dividendos,
-        "preco_pl10": result.preco_pl10,
-        "preco_pl12": result.preco_pl12,
-        "preco_pl15": result.preco_pl15,
-        "preco_pvp1": result.preco_pvp1,
-        "preco_pvp1_5": result.preco_pvp1_5,
-        "preco_bazin": result.preco_bazin,
-        "peg_ratio": result.peg_ratio,
-        "media_precos_justos": result.media_precos_justos,
-        "desconto": result.desconto,
-        "caro": result.caro,
-        "margem_seguranca": result.margem_seguranca
-    }
-    
-    st.code(json.dumps(json_output, indent=2, ensure_ascii=False), language="json")
+    # JSON de saída (fechado por padrão)
+    with st.expander("📄 JSON de Saída", expanded=False):
+        json_output = {
+            "ticker": result.ticker,
+            "preco_atual": result.preco_atual,
+            "preco_graham": result.preco_graham,
+            "preco_dividendos": result.preco_dividendos,
+            "preco_pl10": result.preco_pl10,
+            "preco_pl12": result.preco_pl12,
+            "preco_pl15": result.preco_pl15,
+            "preco_pvp1": result.preco_pvp1,
+            "preco_pvp1_5": result.preco_pvp1_5,
+            "preco_bazin": result.preco_bazin,
+            "peg_ratio": result.peg_ratio,
+            "media_precos_justos": result.media_precos_justos,
+            "desconto": result.desconto,
+            "caro": result.caro,
+            "margem_seguranca": result.margem_seguranca
+        }
+        
+        st.code(json.dumps(json_output, indent=2, ensure_ascii=False), language="json")
 
 
 def render_summary_table(results: List[ValuationResult]):
