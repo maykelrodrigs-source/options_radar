@@ -319,11 +319,8 @@ def _fetch_from_statusinvest(ticker: str, preco_atual: float) -> FundamentalData
                 pass
             return 0.0
         
-        # Extrair dados fundamentais usando seletores mais específicos
-        lpa = _extract_fundamental_value(soup, "LPA")
-        vpa = _extract_fundamental_value(soup, "VPA") 
-        dps = _extract_fundamental_value(soup, "DPS")
-        roe = _extract_fundamental_value(soup, "ROE")
+        # Extrair dados fundamentais usando mapeamento correto
+        lpa, vpa, dps, roe = _extract_fundamentals_correctly(soup)
         
         # Debug: mostrar valores extraídos (removido para produção)
         # print(f"StatusInvest {ticker}: LPA={lpa}, VPA={vpa}, DPS={dps}, ROE={roe}")
@@ -503,6 +500,72 @@ def _extract_from_cards(soup, metric_name):
     except Exception as e:
         print(f"Erro ao extrair {metric_name} de cards: {e}")
         return 0.0
+
+
+def _extract_fundamentals_correctly(soup):
+    """
+    Extrai dados fundamentais corretamente mapeando cada valor para sua métrica.
+    """
+    import re
+    
+    try:
+        # Buscar todos os elementos com classe 'value'
+        value_elements = soup.find_all(class_='value')
+        
+        lpa = 0.0
+        vpa = 0.0
+        dps = 0.0
+        roe = 0.0
+        
+        for element in value_elements:
+            text = element.get_text(strip=True)
+            parent = element.parent
+            if parent:
+                context = parent.get_text(strip=True)
+                
+                # Extrair número do texto
+                value_match = re.search(r'-?[\d,.-]+', text.replace(',', '.'))
+                if value_match:
+                    try:
+                        value = float(value_match.group())
+                        
+                        # Mapear baseado no contexto
+                        if 'PEG Ratio' in context and 'LPA' in context:
+                            lpa = value
+                        elif 'valor patrimonial' in context.lower() and 'patrimônio líquido' in context.lower():
+                            vpa = value
+                        elif 'dividendos' in context.lower() and 'proventos' in context.lower():
+                            # Este é o dividend yield, não DPS
+                            pass
+                        elif 'lucro líquido' in context.lower() and 'patrimônio líquido' in context.lower():
+                            roe = value
+                        elif 'dividendos pagos' in context.lower() and 'ano atual' in context.lower():
+                            dps = value
+                            
+                    except ValueError:
+                        continue
+        
+        # Se não encontrou DPS, tentar buscar por dividendos provisionados
+        if dps == 0.0:
+            for element in value_elements:
+                text = element.get_text(strip=True)
+                parent = element.parent
+                if parent:
+                    context = parent.get_text(strip=True)
+                    if 'provisionado' in context.lower() and 'dividendos' in context.lower():
+                        value_match = re.search(r'-?[\d,.-]+', text.replace(',', '.'))
+                        if value_match:
+                            try:
+                                dps = float(value_match.group())
+                                break
+                            except ValueError:
+                                continue
+        
+        return lpa, vpa, dps, roe
+        
+    except Exception as e:
+        print(f"Erro ao extrair fundamentais: {e}")
+        return 0.0, 0.0, 0.0, 0.0
 
 
 def _fetch_from_statusinvest_api(ticker: str) -> dict:
