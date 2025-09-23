@@ -121,7 +121,7 @@ def render_individual_analysis(yield_min: float, taxa_desconto: float, pl_target
             
             lpa = st.number_input(
                 "LPA - Lucro por Ação (R$)",
-                min_value=0.0,
+                min_value=None,  # Permitir valores negativos
                 value=lpa_default,
                 step=0.01,
                 format="%.2f"
